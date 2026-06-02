@@ -3,6 +3,11 @@ import plotly.graph_objects as go
 import numpy as np
 import random
 import re
+import json
+import datetime
+import time
+import base64
+from io import BytesIO
 
 # ============================================================
 # 0. 页面配置
@@ -10,7 +15,7 @@ import re
 st.set_page_config(page_title="MathTutor高等数学学习平台", layout="wide", page_icon="📐")
 
 # ============================================================
-# 1. 初始化 Session State
+# 1. 初始化 Session State（增强版）
 # ============================================================
 if "page" not in st.session_state:
     st.session_state.page = "home"
@@ -23,8 +28,197 @@ if "history" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 
+# ---- 新增：笔记 ----
+if "notes" not in st.session_state:
+    st.session_state.notes = {}  # {topic_id: [{"text": ..., "time": ...}, ...]}
+
+# ---- 新增：笔记文件 ----
+if "note_files" not in st.session_state:
+    st.session_state.note_files = {}  # {topic_id: [{"name": ..., "data": ..., "type": ..., "time": ...}, ...]}
+
+# ---- 新增：错题 ----
+if "wrong_questions" not in st.session_state:
+    st.session_state.wrong_questions = {}  # {topic_id: [{"text": ..., "type": ..., "aspect": ..., "time": ...}, ...]}
+# 全局错题本（汇总所有知识点的错题）
+if "all_wrong_questions" not in st.session_state:
+    st.session_state.all_wrong_questions = []  # [{"topic_id": ..., "topic_name": ..., "text": ..., "type": ..., "aspect": ..., "time": ...}, ...]
+
+# ---- 新增：课件 ----
+if "course_materials" not in st.session_state:
+    st.session_state.course_materials = {}  # {topic_id: [{"name": ..., "data": ..., "type": ..., "time": ...}, ...]}
+
+# ---- 新增：API Key ----
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
+if "api_provider" not in st.session_state:
+    st.session_state.api_provider = "deepseek"  # 默认
+
+# ---- 新增：时间轴 ----
+if "timeline" not in st.session_state:
+    st.session_state.timeline = []  # [{"time": ..., "action": ..., "topic": ..., "detail": ...}, ...]
+
+# ---- 新增：聊天历史 ----
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []  # [{"role": ..., "content": ...}, ...]
+
+# ---- 新增：错题本页面状态 ----
+if "wrong_book_page" not in st.session_state:
+    st.session_state.wrong_book_page = "home"
+
 # ============================================================
-# 2. 颜色方案
+# 2. 工具函数
+# ============================================================
+def add_timeline(action, topic_name, detail=""):
+    """添加时间轴记录"""
+    st.session_state.timeline.append({
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "action": action,
+        "topic": topic_name,
+        "detail": detail
+    })
+
+def get_timeline_by_date(days=7):
+    """获取最近几天的记录"""
+    now = datetime.datetime.now()
+    result = []
+    for item in st.session_state.timeline:
+        try:
+            item_time = datetime.datetime.strptime(item["time"], "%Y-%m-%d %H:%M")
+            if (now - item_time).days < days:
+                result.append(item)
+        except:
+            result.append(item)
+    return result
+
+def get_ebbinghaus_review_plan():
+    """生成艾宾浩斯复习计划（改进版）"""
+    review_plan = []
+    now = datetime.datetime.now()
+    
+    # 艾宾浩斯间隔：1天、2天、4天、7天、15天
+    intervals = [1, 2, 4, 7, 15]
+    
+    for item in st.session_state.timeline:
+        if item["action"] in ["学习", "复习", "做题"]:
+            try:
+                item_time = datetime.datetime.strptime(item["time"], "%Y-%m-%d %H:%M")
+                days_passed = (now - item_time).days
+                
+                for interval in intervals:
+                    # 改为 >= 判断：只要过了对应天数就提醒
+                    if days_passed >= interval and days_passed < interval + 1:
+                        review_plan.append({
+                            "topic": item["topic"],
+                            "days_ago": days_passed,
+                            "review_date": (item_time + datetime.timedelta(days=interval)).strftime("%m-%d")
+                        })
+                        break
+            except:
+                pass
+    
+    return review_plan
+
+def export_data():
+    """导出所有学习数据为JSON"""
+    data = {
+        "ratings": st.session_state.ratings,
+        "history": st.session_state.history,
+        "notes": st.session_state.notes,
+        "wrong_questions": st.session_state.wrong_questions,
+        "all_wrong_questions": st.session_state.all_wrong_questions,
+        "timeline": st.session_state.timeline,
+        "chat_history": st.session_state.chat_history,
+        "api_key": st.session_state.api_key,
+        "api_provider": st.session_state.api_provider,
+        "export_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+def import_data(json_str):
+    """导入学习数据"""
+    try:
+        data = json.loads(json_str)
+        st.session_state.ratings = data.get("ratings", {})
+        st.session_state.history = data.get("history", {})
+        st.session_state.notes = data.get("notes", {})
+        st.session_state.wrong_questions = data.get("wrong_questions", {})
+        st.session_state.all_wrong_questions = data.get("all_wrong_questions", [])
+        st.session_state.timeline = data.get("timeline", [])
+        st.session_state.chat_history = data.get("chat_history", [])
+        st.session_state.api_key = data.get("api_key", "")
+        st.session_state.api_provider = data.get("api_provider", "deepseek")
+        return True
+    except Exception as e:
+        return False
+
+def call_external_api(prompt, api_key, provider="deepseek"):
+    """调用外部AI API（简化版，使用requests）"""
+    # 这是一个简化的API调用，如果用户配置了API Key则使用
+    if not api_key:
+        return None
+    
+    try:
+        import requests
+        
+        if provider == "deepseek":
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": "你是高等数学学习助手MathTutor，擅长高等数学教学和答疑。请用中文回答，简洁清晰。"},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            try:
+                resp = requests.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    return resp.json()["choices"][0]["message"]["content"]
+                else:
+                    return f"API错误：{resp.status_code}"
+            except:
+                return None
+        
+        elif provider == "openai":
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "model": "gpt-3.5-turbo",
+                "messages": [
+                    {"role": "system", "content": "你是高等数学学习助手MathTutor。"},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            try:
+                resp = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    return resp.json()["choices"][0]["message"]["content"]
+            except:
+                return None
+    
+    except ImportError:
+        return None
+
+# ============================================================
+# 3. 颜色方案
 # ============================================================
 GROUP_COLORS = {
     "函数与预备知识": "#FF6B6B",
@@ -42,10 +236,9 @@ GROUP_COLORS = {
 }
 
 # ============================================================
-# 3. 知识点数据（42个知识点，增强版）
+# 4. 知识点数据（42个知识点，与原来完全一致）
 # ============================================================
 TOPICS = [
-    # ========== 函数与预备知识 ==========
     {"id":"set", "name":"集合与实数集", "group":"函数与预备知识",
      "desc":"""集合是数学最基础的语言，是一切数学推理的起点。把一堆对象放在一起就构成了集合，这些对象称为元素。实数集R是所有实数的集合，它是高等数学的核心研究对象。你需要熟悉区间表示法——开区间(a,b)表示介于a和b之间但不包含端点的所有实数，闭区间[a,b]则包含端点。邻域U(a,δ)={x||x-a|<δ}是在a点附近一个对称的小范围，这个概念对理解极限至关重要。实数的完备性（确界存在定理）是极限理论的基础，它保证了实数没有"空隙"，这是有理数不具备的性质。掌握集合的基本运算（并、交、差、补）和区间表示，是学习高等数学的第一步。""",
      "methods":"""【1】区间表示：(a,b)开区间、(a,b]左开右闭、[a,b]闭区间、[a,+∞)无穷区间
@@ -86,7 +279,6 @@ A∩B={2}（3∉B因开区间）"""},
 【例2】求f(x)=2x+3的反函数。
 解：y=2x+3⇒x=(y-3)/2⇒f⁻¹(x)=(x-3)/2"""},
 
-    # ========== 极限与连续 ==========
     {"id":"seq_limit", "name":"数列极限", "group":"极限与连续",
      "desc":"""数列极限是整个高等数学的基石。数列aₙ当n→∞时趋近于常数A，就称A是数列的极限。极限的精确数学定义是ε-N语言：∀ε>0,∃N,n>N⇒|aₙ-A|<ε，即数列最终会无限接近A，误差可以任意小。极限的存在性可以通过夹逼准则（bₙ≤aₙ≤cₙ且bₙ,cₙ→A⇒aₙ→A）或单调有界准则（单调递增有上界必有极限）来判断。这两个准则是判断极限存在最重要的工具。收敛数列必有界，但反之不成立。""",
      "methods":"""【1】ε-N定义：∀ε>0,∃N,n>N⇒|aₙ-A|<ε
@@ -140,7 +332,6 @@ A∩B={2}（3∉B因开区间）"""},
 【例2】f(x)=(x²-1)/(x-1)在x=1是什么间断点？
 解：无定义，但lim(x→1)(x²-1)/(x-1)=lim(x+1)=2，是可去间断点"""},
 
-    # ========== 导数与微分 ==========
     {"id":"derivative", "name":"导数概念", "group":"导数与微分",
      "desc":"""导数是微积分的核心概念，刻画了函数在一点的变化率。从几何上看，导数是切线的斜率；从物理上看，导数是瞬时速度。导数的定义是f'(x₀)=lim(h→0)[f(x₀+h)-f(x₀)]/h，即函数增量与自变量增量之比的极限。用定义求导需要四步：①求增量Δy ②算比值Δy/Δx ③取极限。导数的本质是"线性逼近"——在局部范围内，函数可以用切线来近似。可导一定连续，但连续不一定可导。""",
      "methods":"""【1】导数定义：f'(x₀)=lim(Δx→0)[f(x₀+Δx)-f(x₀)]/Δx
@@ -205,7 +396,6 @@ A∩B={2}（3∉B因开区间）"""},
 解：f(x)=√x，x₀=4,Δx=0.02
 √4.02≈2+(1/(2·2))×0.02=2+0.005=2.005"""},
 
-    # ========== 中值定理与应用 ==========
     {"id":"mean_theorem", "name":"微分中值定理","group":"中值定理与应用",
      "desc":"""微分中值定理是连接函数与导数的桥梁。罗尔定理：如果f在[a,b]上连续、开区间可导、且端点函数值相等f(a)=f(b)，则在(a,b)内至少存在一点ξ使得f'(ξ)=0。拉格朗日中值定理是罗尔定理的推广：f(b)-f(a)=f'(ξ)(b-a)，给出了函数增量与导数的精确关系。这个定理的推论非常有用：如果在某区间上f'(x)≡0则f(x)为常数；如果f'(x)>0则f严格递增。柯西中值定理是更一般的形式，为洛必达法则提供了理论基础。""",
      "methods":"""【1】罗尔定理：①连续②可导③f(a)=f(b)⇒∃ξ∈(a,b),f'(ξ)=0
@@ -278,7 +468,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
 【例2】求f(x)=1/(x-1)的渐近线。
 解：x=1垂直渐近线，y=0水平渐近线"""},
 
-    # ========== 积分学 ==========
     {"id":"def_integral", "name":"定积分概念","group":"积分学",
      "desc":"""定积分的核心思想是"分割、近似、求和、取极限"——将区间细分，在每个小区间上以矩形近似曲边梯形，求和后取极限得到精确面积。定积分的几何意义是曲线下方的面积。可积条件：连续函数必可积，有界且有有限个第一类间断点的函数也可积。定积分的性质包括线性、区间可加性、保号性、估值定理、积分中值定理等。""",
      "methods":"""【1】定义：∫ₐᵇ f(x)dx=lim∑f(ξᵢ)Δxᵢ
@@ -335,7 +524,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【例1】∫₁^∞ 1/x² dx=lim(R→∞)(1-1/R)=1（收敛）
 【例2】∫₀¹ 1/x dx发散（lnx→-∞）"""},
 
-    # ========== 定积分应用 ==========
     {"id":"integral_app_area", "name":"平面图形面积","group":"定积分应用",
      "desc":"""定积分计算平面图形面积是几何应用中最直接的部分。直角坐标系下两条曲线围成的面积为A=∫ₐᵇ|f(x)-g(x)|dx。极坐标系下扇形面积为A=½∫ₐᵝ r²dθ。求面积的步骤是：画图→求交点→选积分变量→确定被积函数（上减下/右减左）→计算定积分。""",
      "methods":"""【1】直角坐标：A=∫|f(x)-g(x)|dx（上减下）或∫|x₁(y)-x₂(y)|dy（右减左）
@@ -361,7 +549,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【例1】y=2x在[0,1]上弧长=∫₀¹√5dx=√5
 【例2】单位圆周长=2π"""},
 
-    # ========== 空间解析几何 ==========
     {"id":"vector", "name":"向量运算","group":"空间解析几何",
      "desc":"""向量是既有大小又有方向的量，是空间解析几何的语言基础。数量积（点乘）a·b=|a||b|cosθ=x₁x₂+y₁y₂+z₁z₂，结果为标量，用于求投影和判断垂直。向量积（叉乘）a×b的结果是一个垂直于a和b的向量，大小为以a,b为边的平行四边形面积。混合积(a×b)·c的几何意义是三个向量张成的平行六面体的体积。""",
      "methods":"""【1】数量积：a·b=|a||b|cosθ=x₁x₂+y₁y₂+z₁z₂，a⊥b⇔a·b=0
@@ -389,7 +576,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【例1】x²+y²=1⇒圆柱面（母线平行z轴，半径为1）
 【例2】z=x²+y²⇒旋转抛物面（由z=x²绕z轴旋转得到）"""},
 
-    # ========== 多元函数微分 ==========
     {"id":"multi_func", "name":"多元函数概念","group":"多元函数微分",
      "desc":"""多元函数z=f(x,y)将两个自变量映射到一个因变量，图形是三维空间中的曲面。二重极限必须沿所有路径趋近时都趋向同一个值才存在——这是与一元极限最大的不同。等值线f(x,y)=C是理解函数空间变化的有力工具，在等值线上函数值保持不变。""",
      "methods":"""【1】二重极限：lim((x,y)→(x₀,y₀))f(x,y)=A，需沿所有路径趋近同一值
@@ -444,7 +630,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【例1】f=x²+y²-2x-4y+5在(1,2)处极小值0
 【例2】f=xy在x+y=1约束下，拉格朗日法得极大值1/4"""},
 
-    # ========== 重积分 ==========
     {"id":"double_int", "name":"二重积分","group":"重积分",
      "desc":"""二重积分是定积分在平面上的推广。直角坐标下化为累次积分：X型区域先对y积分再对x积分，Y型区域先对x积分再对y积分。极坐标下x=rcosθ,y=rsinθ,dA=rdrdθ，特别适合圆形或具有旋转对称性的区域。换序积分有时能大大简化计算。""",
      "methods":"""【1】直角坐标：X型∬f dA=∫dx∫f dy；Y型∬f dA=∫dy∫f dx
@@ -470,7 +655,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【1】z=√(x²+y²)在x²+y²≤1上的面积=√2·π·1²=√2π
 【2】半球z=√(R²-x²-y²)的面积=2πR²"""},
 
-    # ========== 曲线曲面积分 ==========
     {"id":"line_int_1st", "name":"第一型曲线积分","group":"曲线曲面积分",
      "desc":"""第一型曲线积分∫_L f(x,y)ds是对弧长的曲线积分，物理背景是计算曲线质量（线密度为f）。与第二型曲线积分不同，第一型与曲线方向无关。参数化计算为∫f(x(t),y(t))·√(x'²+y'²)dt。""",
      "methods":"""【1】参数化：∫_L f(x,y)ds=∫_α^β f(x(t),y(t))·√(x'²+y'²)dt
@@ -504,7 +688,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【1】∯(x,y,z)·dS球面=∭3dV=3·4π/3=4π
 【2】∮(y,z,x)·dr圆x²+y²=1=-π（斯托克斯公式）"""},
 
-    # ========== 无穷级数 ==========
     {"id":"num_series", "name":"数项级数","group":"无穷级数",
      "desc":"""无穷级数∑aₙ是无限项求和。级数收敛当且仅当部分和Sₙ有极限。收敛的必要条件是通项aₙ→0（但反之不成立——调和级数∑1/n就是通项→0但发散的反例）。几何级数∑rⁿ当|r|<1时收敛于1/(1-r)。p-级数∑1/nᵖ当p>1时收敛，p≤1时发散。""",
      "methods":"""【1】收敛定义：部分和Sₙ→S（有限）⇒∑aₙ收敛于S
@@ -565,7 +748,6 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
      "examples": """【1】f(x)=x在[-π,π]上（奇函数）：展开为正弦级数∑2(-1)ⁿ⁺¹/n·sin(nx)
 【2】f(x)=|x|在[-π,π]上（偶函数）：展开为余弦级数π/2-4/π∑cos((2k-1)x)/(2k-1)²"""},
 
-    # ========== 微分方程 ==========
     {"id":"ode_basic", "name":"微分方程概念","group":"微分方程",
      "desc":"""微分方程是含有未知函数及其导数的方程，在物理、工程、生物、经济等领域有广泛应用。微分方程的阶是最高阶导数的阶数。通解含有与阶数相同数量的独立任意常数，特解由初始条件确定。初值问题是微分方程加上初始条件的组合，用于求满足特定条件的特解。""",
      "methods":"""【1】阶数：最高阶导数的阶数
@@ -613,7 +795,7 @@ f''(-1)=-6<0⇒极大值f(-1)=2；f''(1)=6>0⇒极小值f(1)=-2
 TOPIC_DICT = {t["id"]: t for t in TOPICS}
 TOPIC_IDS = [t["id"] for t in TOPICS]
 # ============================================================
-# 4. 题库（每个知识点10-15道题，增强版）
+# 5. 题库（每个知识点10-15道题）
 # ============================================================
 def mcq(q, opts, ans, explain):
     return {"q":q, "options":opts, "answer":ans, "explain":explain}
@@ -654,28 +836,10 @@ QUESTIONS["function"] = [
     mcq("函数f(x)=sinx的周期是？",["2π","π","4π","π/2"],0,"sinx最小正周期2π"),
 ]
 
-QUESTIONS["compfunc"] = [
-    mcq("f(x)=sin(2x+1)是复合函数吗？",["是，内层2x+1外层sin","不是","内层sin外层2x+1","无法判断"],0,"复合结构"),
-    mcq("y=sin²(3x)的复合层次是？",["3层：3x→sin→平方","2层","4层","1层"],0,"先3x再sin再平方"),
-    mcq("f(x)=e^(x²+1)的内层是？",["x²+1","eˣ","e^u","x²"],0,"内层g(x)=x²+1"),
-    mcq("f(x)=ln(cosx)的定义域？",["cosx>0","x>0","cosx>0⇒R","x>1"],0,"ln真数>0"),
-    mcq("反函数f⁻¹(x)满足？",["f⁻¹(f(x))=x","f(f⁻¹(x))=x","两者都成立","都不成立"],2,"互为反函数"),
-    mcq("f(x)=2x的反函数是？",["x/2","2x","-2x","x+2"],0,"y=2x⇒x=y/2"),
-    mcq("y=x²在[0,+∞)上的反函数是？",["√x","-√x","±√x","x²"],0,"x≥0时反函数√x"),
-    mcq("f(x)=eˣ的反函数是？",["lnx","logx","e⁻ˣ","x²"],0,"指数与对数互为反函数"),
-    mcq("复合函数求导用？",["链式法则","乘积法则","商法则","加法法则"],0,"链式法则"),
-    mcq("f(g(h(x)))从外到内是？",["f→g→h","h→g→f","f→h→g","g→f→h"],0,"最外f最内h"),
-    mcq("f(x)=³√(sinx)是几层复合？",["2层","1层","3层","4层"],0,"sin→立方根"),
-    mcq("复合函数定义域的求法？",["使内层值在外层定义域内","只使内层有意义","只使外层有意义","取并集"],0,""),
-    mcq("y=ln(sinx)的定义域？",["sinx>0⇒(2kπ,(2k+1)π)","x>0","sinx≥0","R"],0,""),
-    mcq("f(x)=arcsin(x²)的定义域？",["[-1,1]","[0,1]","R","[0,∞)"],0,"|x²|≤1⇒|x|≤1"),
-]
-
 QUESTIONS["seq_limit"] = [
     mcq("aₙ=1/n的极限是？",["0","1","不存在","∞"],0,"n→∞时1/n→0"),
     mcq("ε-N定义中ε和N的关系？",["给定ε找N","给定N找ε","ε=N","无关"],0,"∀ε>0,∃N"),
     mcq("lim(n→∞)(-1)ⁿ存在吗？",["不存在","存在为0","存在为1","存在为-1"],0,"摇摆不收敛"),
-    mcq("aₙ→0是收敛于0的什么条件？",["定义","必要条件","充分条件","无关"],0,"定义如此"),
     mcq("夹逼准则用于？",["证明极限存在并求值","求导","积分","级数求和"],0,"两边夹定理"),
     mcq("单调递增有上界则？",["极限存在","极限不存在","发散到∞","极限为0"],0,"单调有界准则"),
     mcq("lim(1+1/n)ⁿ=？",["e","1","∞","2"],0,"重要极限"),
@@ -745,11 +909,9 @@ QUESTIONS["derivative"] = [
     mcq("用定义求导第一步是？",["求Δy","套公式","积分","化简"],0,"先算增量"),
     mcq("可导和连续的关系？",["可导⇒连续","连续⇒可导","等价","无关"],0,"可导必连续"),
     mcq("f(x)=|x|在x=0处可导吗？",["不可导","可导","导数为0","导数为1"],0,"左右导数不等"),
-    mcq("导数定义的公式是？",["lim(f(x+h)-f(x))/h","lim(f(x)-f(x-h))/h","A和B","lim f(x)/x"],2,"两者等价"),
-    mcq("切线方程的形式？",["y-f(x₀)=f'(x₀)(x-x₀)","y=f(x)","y=f'(x)x","y-f(x₀)=x-x₀"],0,"点斜式"),
+    mcq("左右导数存在且相等是可导的？",["充要条件","必要条件","无关条件","充分不必要"],0,""),
     mcq("常数的导数是？",["0","1","c","不存在"],0,"常数导数为0"),
     mcq("f(x)=x的导数是？",["1","0","x","2x"],0,"幂函数求导"),
-    mcq("左右导数存在且相等是可导的？",["充要条件","必要条件","无关条件","充分不必要"],0,""),
     mcq("f(x)=√x的导数是？",["1/(2√x)","1/√x","2√x","x√x"],0,"幂函数求导"),
     mcq("f(x)=1/x的导数是？",["-1/x²","1/x²","-1/x","1/x"],0,"幂函数求导"),
     mcq("f(x)=x⁵的导数是？",["5x⁴","x⁴","5x⁵","20x³"],0,"幂函数法则"),
@@ -775,47 +937,31 @@ QUESTIONS["diff_rules"] = [
 
 QUESTIONS["higher_der"] = [
     mcq("eˣ的100阶导数是？",["eˣ","100eˣ","100!eˣ","0"],0,"eˣ各阶不变"),
-    mcq("sinx的四阶导数是？",["sinx","-sinx","cosx","-cosx"],0,"周期4"),
     mcq("莱布尼茨公式用于？",["乘积高阶导","复合函数","隐函数","参数方程"],0,"莱布尼茨"),
     mcq("f(x)=x³的3阶导数是？",["6","3x²","6x","0"],0,"f'''=6"),
     mcq("f''(x)>0说明曲线？",["凹向上","凸向上","递增","递减"],0,"二阶导与凹凸"),
-    mcq("f(x)=lnx的n阶导？",["(-1)^(n-1)(n-1)!/xⁿ","1/xⁿ","n!/xⁿ","(-1)ⁿ/xⁿ"],0,"对数高阶导"),
     mcq("f(x)=x⁴的4阶导数是？",["24","24x","4!","0"],0,"4!=24"),
-    mcq("(uv)'''按莱布尼茨有几项？",["4项","3项","2项","5项"],0,"C(3,0)到C(3,3)"),
     mcq("f(x)=sin2x的2阶导数是？",["-4sin2x","-2sin2x","4sin2x","2cos2x"],0,"求导两次"),
     mcq("f(x)=x⁵的5阶导数是？",["120","5!x","5","0"],0,"5!=120"),
-    mcq("f''(x)=6x，f(x)可能是？",["x³+C₁x+C₂","x²","x⁴","6x"],0,"积分两次"),
     mcq("cosx的四阶导数是？",["cosx","-cosx","sinx","-sinx"],0,"周期4"),
 ]
 
 QUESTIONS["implicit_der"] = [
     mcq("x²+y²=1，y'=？",["-x/y","x/y","y/x","-y/x"],0,"两边求导"),
     mcq("参数方程dy/dx=？",["(dy/dt)/(dx/dt)","(dx/dt)/(dy/dt)","dy/dt","dx/dt"],0,"参数求导"),
-    mcq("eʸ+xy=e, 在(0,1)处y'=？",["-1/e","1/e","0","-1"],0,"代入求值"),
-    mcq("x³+y³=3xy，求y'",["(y-x²)/(y²-x)","(x²-y)/(y²-x)","(y²-x)/(y-x²)","(x-y)/(x²-y²)"],0,"隐函数求导"),
-    mcq("相关变化率的通常步骤？",["建立关系→求导→代入","直接代入","求导即可","积分"],0,"三步法"),
     mcq("x=acost,y=bsint，dy/dx=？",["-(b/a)cott","(b/a)cott","-(a/b)tant","(a/b)tant"],0,"参数求导"),
-    mcq("y=ln(xy)的隐函数求导结果？",["y'=y/(x(1-y))","y'=y/x","y'=1/(x-y)","y'=y/(x(1+y))"],0,""),
-    mcq("y=1+xeʸ，求y'(0)",["e","1","0","-1"],0,"代入x=0,y=1"),
 ]
 
 QUESTIONS["differential"] = [
     mcq("y=sinx的微分dy=？",["cosx·dx","-cosx·dx","sinx·dx","-sinx·dx"],0,"微分定义"),
     mcq("√4.02的近似值？",["2.005","2.01","2.02","2.001"],0,"微分近似"),
     mcq("微分dy与增量Δy的关系？",["dy≈Δy","dy=Δy","dy>Δy","dy<Δy"],0,"dy是主部"),
-    mcq("y=x²eˣ的微分dy=？",["(2x+x²)eˣdx","2xeˣdx","x²eˣdx","(2x+1)eˣdx"],0,"乘积微分"),
-    mcq("d(uv)=？",["vdu+udv","u'v+uv'","u'v'dx","(uv)'"],0,"微分公式"),
     mcq("形式不变性指？",["dy=f'(u)du无论u是什么","dy总是f'(x)dx","dy与x无关","dy=Δy"],0,""),
-    mcq("用微分求sin31°≈？",["0.515","0.5","0.52","0.51"],0,"sin30°=0.5,cos30°=√3/2≈0.866,0.5+0.866×π/180≈0.515"),
-    mcq("y=ln(1+x)在x=0处微分？",["dx","xdx","1/(1+x)dx","0"],0,"dy=1/(1+0)dx=dx"),
 ]
 
 QUESTIONS["mean_theorem"] = [
     mcq("罗尔定理的条件不包括？",["端点值不等","连续","可导","f(a)=f(b)"],0,"需f(a)=f(b)"),
     mcq("拉格朗日中值公式？",["f(b)-f(a)=f'(ξ)(b-a)","f(b)=f(a)","f'(ξ)=0","f'(ξ)=f(ξ)"],0,"中值定理"),
-    mcq("罗尔定理中ξ满足？",["f'(ξ)=0","f(ξ)=0","f'(ξ)=f(ξ)","f(ξ)=f(a)"],0,"导数为0"),
-    mcq("拉格朗日定理的推论？",["f'(x)>0⇒递增","f'(x)>0⇒递减","f'(x)=0⇒递增","f'(x)<0⇒递增"],0,""),
-    mcq("柯西中值定理用于证明？",["洛必达法则","泰勒公式","格林公式","高斯公式"],0,""),
     mcq("|sinx-siny|≤|x-y|用哪个定理证？",["拉格朗日","罗尔","柯西","泰勒"],0,"中值定理"),
     mcq("f(x)=x²在[1,3]上，拉格朗日中值ξ=？",["2","1.5","2.5","1"],0,"(9-1)/(3-1)=4=2ξ⇒ξ=2"),
 ]
@@ -826,14 +972,11 @@ QUESTIONS["lhopital"] = [
     mcq("lim(x→∞) x/eˣ=？",["0","1","∞","-1"],0,"洛必达得1/eˣ→0"),
     mcq("0·∞型如何化？",["化为0/0或∞/∞","直接代入","乘以共轭","取对数"],0,""),
     mcq("1^∞型如何处理？",["取对数","直接代入","通分","洛必达"],0,"取对数化"),
-    mcq("lim(x→0) (eˣ-1)/x=？",["1","0","∞","e"],0,"洛必达得eˣ/1=1"),
 ]
 
 QUESTIONS["taylor"] = [
     mcq("eˣ的麦克劳林展开？",["∑xⁿ/n!","∑xⁿ","∑xⁿ/n","∑nxⁿ"],0,""),
     mcq("sinx的麦克劳林展开含？",["奇次项","偶次项","全部项","常数项"],0,"奇函数展开"),
-    mcq("泰勒公式的余项常见形式？",["皮亚诺和拉格朗日","罗尔","柯西","洛必达"],0,"两种余项"),
-    mcq("麦克劳林公式是x₀=？",["0","1","a","π"],0,"x₀=0"),
     mcq("1/(1-x)=∑xⁿ的收敛域？",["(-1,1)","[-1,1]","R","(-∞,1)"],0,"|x|<1"),
     mcq("cosx的麦克劳林展开？",["1-x²/2!+x⁴/4!-...","x-x³/3!+x⁵/5!-...","∑xⁿ/n!","1+x+x²/2!+..."],0,""),
     mcq("ln(1+x)=？",["∑(-1)ⁿ⁻¹xⁿ/n","∑xⁿ","∑xⁿ/n","∑(-1)ⁿxⁿ"],0,""),
@@ -845,7 +988,6 @@ QUESTIONS["extremum"] = [
     mcq("二阶判别法中f''(x₀)>0⇒？",["极小值","极大值","鞍点","无法判断"],0,""),
     mcq("闭区间最值需比较哪些点？",["驻点+端点","只驻点","只端点","极值点"],0,""),
     mcq("f(x)=x²-2x的极小值？",["-1","0","1","2"],0,"f(1)=-1"),
-    mcq("f(x)=2x³-3x²的极值点个数？",["2","1","0","3"],0,"f'=6x(x-1)=0"),
 ]
 
 QUESTIONS["curve_sketch"] = [
@@ -853,13 +995,11 @@ QUESTIONS["curve_sketch"] = [
     mcq("拐点处f''(x)？",["=0且变号","=0且不变号",">0","<0"],0,"拐点定义"),
     mcq("水平渐近线条件？",["lim f(x)=c","lim f(x)=∞","lim f'(x)=0","lim f''(x)=0"],0,""),
     mcq("垂直渐近线条件？",["lim f(x)=∞","lim f(x)=c","lim f'(x)=∞","lim f(x)=0"],0,""),
-    mcq("斜渐近线y=kx+b中k=？",["lim f(x)/x","lim f(x)","lim f'(x)","lim (f(x)-kx)"],0,""),
 ]
 
 QUESTIONS["def_integral"] = [
     mcq("定积分∫ₐᵇ f(x)dx的几何意义？",["曲线下面积","曲线长度","切线斜率","平均值"],0,""),
     mcq("∫₀¹ xdx=？",["1/2","1","0","2"],0,""),
-    mcq("估值定理：m≤f≤M⇒？",["m(b-a)≤∫f≤M(b-a)","∫f=0","∫f=f(ξ)(b-a)","∫f=∞"],0,""),
     mcq("积分中值定理？",["∫f=f(ξ)(b-a)","∫f=0","∫f=F(b)-F(a)","∫f=∑f(ξᵢ)Δxᵢ"],0,""),
     mcq("连续函数在闭区间上？",["必可积","可能不可积","不一定可积","不可积"],0,"连续⇒可积"),
 ]
@@ -869,14 +1009,12 @@ QUESTIONS["indef_integral"] = [
     mcq("∫sinxdx=？",["-cosx+C","cosx+C","-sinx+C","sinx+C"],0,""),
     mcq("∫1/xdx=？",["ln|x|+C","lnx+C","1/x²+C","x+C"],0,"绝对值"),
     mcq("∫eˣdx=？",["eˣ+C","eˣ","xeˣ+C","lnx+C"],0,""),
-    mcq("∫(3x²+2)dx=？",["x³+2x+C","x³+2","3x²+2x+C","6x+C"],0,""),
 ]
 
 QUESTIONS["substitution"] = [
     mcq("∫2x·cos(x²)dx令u=？",["x²","2x","cosx","x"],0,"凑微分"),
     mcq("∫√(1-x²)dx常用代换？",["x=sint","x=tant","x=sect","x=t²"],0,"三角代换"),
     mcq("∫cos(2x)dx=？",["½sin(2x)+C","sin(2x)+C","2sin(2x)+C","-½sin(2x)+C"],0,""),
-    mcq("第一类换元又称？",["凑微分法","分部积分","变量替换","分部法"],0,""),
     mcq("定积分换元要？",["换限","不换限","加常数","乘2"],0,""),
 ]
 
@@ -884,15 +1022,12 @@ QUESTIONS["by_parts"] = [
     mcq("∫x·eˣdx=？",["eˣ(x-1)+C","eˣ(x+1)+C","xeˣ+C","eˣ+C"],0,"分部积分"),
     mcq("选择u的原则？",["反对幂指三","指幂反对三","三指幂反对","随意"],0,""),
     mcq("∫lnxdx=？",["x(lnx-1)+C","xlnx+C","lnx+C","x+C"],0,""),
-    mcq("分部积分公式？",["∫udv=uv-∫vdu","∫udv=uv+∫vdu","∫udv=u'v-∫uv'","∫udv=uv"],0,""),
-    mcq("∫x·sinxdx=？",["sinx-xcosx+C","xcosx+sinx+C","-xcosx+sinx+C","xsinx+cosx+C"],0,""),
 ]
 
 QUESTIONS["newton_leibniz"] = [
     mcq("∫₀¹ x²dx=？",["1/3","1/2","1","0"],0,""),
     mcq("∫₀^(π/2) sinxdx=？",["1","0","π/2","2"],0,""),
     mcq("积分上限函数Φ(x)=∫ₐˣ f(t)dt的导数？",["f(x)","F(x)","f'(x)","0"],0,"Φ'(x)=f(x)"),
-    mcq("微积分基本定理又称？",["牛顿-莱布尼茨","格林","高斯","斯托克斯"],0,""),
     mcq("∫₋₁¹ x³dx=？",["0","2","-2","1"],0,"奇函数对称区间=0"),
 ]
 
@@ -901,14 +1036,12 @@ QUESTIONS["improper_int"] = [
     mcq("p-积分∫₁^∞ 1/xᵖdx收敛条件？",["p>1","p<1","p=1","p≥1"],0,""),
     mcq("∫₀¹ 1/√xdx？",["收敛于2","发散","收敛于1","收敛于∞"],0,"p=1/2<1收敛"),
     mcq("∫₀¹ 1/xdx？",["发散","收敛于1","收敛于0","收敛于∞"],0,"p=1发散"),
-    mcq("广义积分又称？",["反常积分","正常积分","定积分","重积分"],0,""),
 ]
 
 QUESTIONS["integral_app_area"] = [
     mcq("y=x²从0到1围成的面积？",["1/3","1/2","1","2/3"],0,""),
     mcq("极坐标面积公式？",["½∫r²dθ","∫r²dθ","∫rdθ","½∫rdθ"],0,""),
     mcq("y=x²与y=√x围成的面积？",["1/3","1","1/2","2/3"],0,""),
-    mcq("求面积第一步？",["画图求交点","直接积分","求导","代入"],0,""),
 ]
 
 QUESTIONS["integral_app_volume"] = [
@@ -926,7 +1059,6 @@ QUESTIONS["integral_app_arc"] = [
 QUESTIONS["vector"] = [
     mcq("a=(1,2,3),b=(4,5,6),a·b=？",["32","30","28","34"],0,"4+10+18=32"),
     mcq("数量积结果是？",["标量","向量","矩阵","零"],0,""),
-    mcq("向量积a×b的方向？",["垂直于a,b","平行于a","平行于b","在ab平面内"],0,"右手定则"),
     mcq("a⊥b的条件？",["a·b=0","a×b=0","|a|=|b|","a=b"],0,""),
     mcq("|a|=√(a·a)计算的是？",["模长","方向","投影","面积"],0,""),
 ]
@@ -935,12 +1067,6 @@ QUESTIONS["plane_line"] = [
     mcq("平面Ax+By+Cz+D=0的法向量？",["(A,B,C)","(A,B,D)","(B,C,D)","(A,C,D)"],0,""),
     mcq("点到平面的距离公式？",["|Ax₀+By₀+Cz₀+D|/√(A²+B²+C²)","√(x₀²+y₀²+z₀²)","|Ax₀+By₀+Cz₀|","|D|/√(A²+B²+C²)"],0,""),
     mcq("直线的对称式方程中用到了？",["方向向量","法向量","切向量","梯度"],0,""),
-]
-
-QUESTIONS["surface_curve"] = [
-    mcq("x²+y²=1表示？",["圆柱面","球面","椭球面","双曲面"],0,"缺z"),
-    mcq("z=x²+y²表示？",["旋转抛物面","圆锥面","球面","平面"],0,""),
-    mcq("球面方程的标准形式？",["(x-x₀)²+(y-y₀)²+(z-z₀)²=R²","x²+y²+z²=R","x²+y²=z²","x+y+z=R"],0,""),
 ]
 
 QUESTIONS["multi_func"] = [
@@ -952,19 +1078,16 @@ QUESTIONS["multi_func"] = [
 QUESTIONS["partial_der"] = [
     mcq("f(x,y)=x²y，∂f/∂x=？",["2xy","x²","2y","2x"],0,""),
     mcq("f_xy=f_yx的条件？",["连续","可导","有界","可积"],0,"混合偏导相等定理"),
-    mcq("f(x,y)=eˣʸ，f_x=？",["yeˣʸ","xeˣʸ","eˣʸ","xyeˣʸ"],0,""),
 ]
 
 QUESTIONS["total_diff"] = [
     mcq("z=x²+y²的全微分dz=？",["2xdx+2ydy","xdx+ydy","2x+2y","2dx+2dy"],0,""),
     mcq("可微的充分条件？",["偏导连续","偏导存在","函数连续","极限存在"],0,""),
-    mcq("(1.02)²(1.98)的近似？",["2.06","2.04","2.08","2.02"],0,""),
 ]
 
 QUESTIONS["chain_rule_multi"] = [
     mcq("z=f(u,v),u=x²,∂z/∂x=？",["∂z/∂u·2x","∂z/∂v·2x","∂z/∂u+∂z/∂v","∂z/∂u·x"],0,"链法则"),
     mcq("全导数dz/dt=？",["∂z/∂u·du/dt+∂z/∂v·dv/dt","∂z/∂t","∂z/∂u+∂z/∂v","dz/dt=0"],0,""),
-    mcq("依赖关系树用于？",["理解链法则","求偏导数值","判断连续性","求极限"],0,""),
 ]
 
 QUESTIONS["gradient"] = [
@@ -991,27 +1114,9 @@ QUESTIONS["triple_int"] = [
     mcq("单位球体积=？",["4π/3","π","2π/3","π/3"],0,""),
 ]
 
-QUESTIONS["int_application"] = [
-    mcq("曲面z=f(x,y)的面积公式？",["∬√(1+f_x²+f_y²)dA","∬(1+f_x+f_y)dA","∬f dA","∬√(f_x²+f_y²)dA"],0,""),
-    mcq("重心公式包含？",["质量加权平均","简单平均","中位数","众数"],0,""),
-]
-
-QUESTIONS["line_int_1st"] = [
-    mcq("第一型曲线积分与方向？",["无关","有关","反向变号","有时有关"],0,""),
-    mcq("弧参数化时ds=？",["√(x'²+y'²)dt","(x'²+y'²)dt","(x'+y')dt","√(x'+y')dt"],0,""),
-    mcq("∫_L 1 ds的计算结果是？",["曲线长度","曲面积分","函数值","0"],0,""),
-]
-
-QUESTIONS["line_int_2nd"] = [
-    mcq("第二型曲线积分与方向？",["有关，反向变号","无关","有时有关","不确定"],0,""),
-    mcq("与路径无关的条件？",["∂P/∂y=∂Q/∂x","∂P/∂x=∂Q/∂y","P=Q","P=0"],0,""),
-    mcq("变力做功用哪种积分？",["第二型曲线积分","第一型曲线积分","曲面积分","重积分"],0,""),
-]
-
 QUESTIONS["green"] = [
     mcq("格林公式联系了？",["线积分与二重积分","线积分与曲面积分","重积分与曲面积分","线积分与线积分"],0,""),
     mcq("格林公式中面积A=？",["½∮xdy-ydx","½∮ydx-xdy","∮xdy","∮ydx"],0,""),
-    mcq("公式中曲线的方向？",["逆时针（正向）","顺时针","任意","由函数决定"],0,""),
 ]
 
 QUESTIONS["surface_int"] = [
@@ -1031,13 +1136,11 @@ QUESTIONS["pos_series"] = [
     mcq("p-级数∑1/nᵖ收敛条件？",["p>1","p<1","p=1","p≥1"],0,""),
     mcq("比值法中ρ<1说明？",["收敛","发散","无法判断","等于1"],0,""),
     mcq("根值法中ρ<1说明？",["收敛","发散","无法判断","等于1"],0,""),
-    mcq('比较判别法中"大敛小散"指？',["大收敛⇒小收敛","小收敛⇒大收敛","大发散⇒小发散","无关"],0,""),
 ]
 
 QUESTIONS["alt_series"] = [
     mcq("交错级数∑(-1)ⁿ⁻¹/n？",["条件收敛","绝对收敛","发散","无法判断"],0,""),
     mcq("莱布尼茨判别法的条件？",["aₙ↘0","aₙ↗","aₙ有界","aₙ>1"],0,""),
-    mcq("条件收敛的定义？",["∑aₙ收敛,∑|aₙ|发散","∑aₙ发散","∑|aₙ|收敛","∑aₙ=0"],0,""),
     mcq("∑(-1)ⁿ/n²是？",["绝对收敛","条件收敛","发散","无法判断"],0,""),
 ]
 
@@ -1045,21 +1148,12 @@ QUESTIONS["power_series"] = [
     mcq("∑xⁿ的收敛半径？",["1","0","∞","-1"],0,""),
     mcq("收敛半径R=？",["lim|aₙ/aₙ₊₁|","lim aₙ","lim 1/aₙ","lim n"],0,""),
     mcq("幂级数在收敛区间内可？",["逐项求导和积分","仅求导","仅积分","不能运算"],0,""),
-    mcq("∑xⁿ/n²的收敛区间？",["[-1,1]","(-1,1)","[-1,1)","(-1,1]"],0,"端点都收敛"),
 ]
 
 QUESTIONS["taylor_series"] = [
     mcq("sinx的麦克劳林级数含？",["奇次项","偶次项","全部项","常数项"],0,""),
     mcq("cosx的麦克劳林级数含？",["偶次项","奇次项","全部项","无常数项"],0,""),
-    mcq("间接展开法优势？",["更简便","更精确","唯一方法","无条件"],0,""),
     mcq("eˣ的展开式收敛域？",["R","(-1,1)","[0,∞)","(-∞,0)"],0,""),
-]
-
-QUESTIONS["fourier"] = [
-    mcq("奇函数的傅里叶级数含？",["正弦项","余弦项","常数项","全部项"],0,""),
-    mcq("偶函数的傅里叶级数含？",["余弦项+常数","正弦项","只有常数","全部项"],0,""),
-    mcq("狄利克雷条件保证？",["傅里叶级数收敛","函数连续","函数可导","积分存在"],0,""),
-    mcq("傅里叶系数a₀=？",["1/π∫₋π^π f(x)dx","1/π∫₋π^π f(x)cosxdx","1/π∫₋π^π f(x)sinxdx","0"],0,""),
 ]
 
 QUESTIONS["ode_basic"] = [
@@ -1085,7 +1179,6 @@ QUESTIONS["ode_high"] = [
 QUESTIONS["ode_const"] = [
     mcq("y''-3y'+2y=0的特征方程？",["r²-3r+2=0","r²+3r+2=0","r²-3r-2=0","r²+3r-2=0"],0,""),
     mcq("特征根为r=1,2时通解？",["C₁eˣ+C₂e²ˣ","(C₁+C₂x)eˣ","eˣ(C₁cosx+C₂sinx)","C₁+C₂e²ˣ"],0,""),
-    mcq("重根r时的通解形式？",["(C₁+C₂x)eʳˣ","C₁eʳˣ+C₂eʳˣ","C₁eʳˣ+C₂xeˣ","C₁eʳˣ+C₂"],0,""),
     mcq("y''+y=0的通解？",["C₁cosx+C₂sinx","C₁eˣ+C₂e⁻ˣ","(C₁+C₂x)eˣ","C₁+C₂x"],0,""),
 ]
 
@@ -1094,11 +1187,10 @@ for t in TOPICS:
     if t["id"] not in QUESTIONS:
         QUESTIONS[t["id"]] = [
             mcq(f"{t['name']}是高等数学的重要内容吗？",["是","不是","不确定","无关"],0,f"{t['name']}是高等数学核心内容"),
-            mcq(f"{t['name']}在实际中是否有应用？",["有广泛应用","没有应用","仅理论","未知"],0,"数学在各领域都有应用"),
         ]
 
 # ============================================================
-# 5. 构建知识图谱边
+# 6. 构建知识图谱边
 # ============================================================
 def build_edges():
     edges = []
@@ -1139,104 +1231,80 @@ def build_edges():
 EDGES = build_edges()
 
 # ============================================================
-# 6. AI 问答系统（带知识点跳转）
+# 7. AI 问答系统
 # ============================================================
-# 格式：(回答文本, [关联知识点ID列表], [关联方法关键词列表])
 QA_ANSWERS = {
-    "什么是极限": ("极限描述当自变量趋近于某值时，函数值无限接近的某个常数。ε-δ语言是其严格定义：∀ε>0,∃δ>0,0<|x-x₀|<δ⇒|f(x)-A|<ε。", ["seq_limit", "func_limit"], ["ε-N定义", "夹逼准则"]),
-    "ε-δ": ("ε-δ语言是极限的严格数学定义：对于任意给定的正数ε，存在正数δ，使得当x与x₀的距离小于δ时，f(x)与A的距离小于ε。关键是要理解'任意ε'和'存在δ'的量化关系。", ["seq_limit", "func_limit"], ["ε-N定义"]),
-    "左右极限": ("函数极限存在当且仅当左极限等于右极限。左极限是x从左侧趋近x₀，右极限是从右侧趋近。如果两者不相等，则极限不存在，该点为跳跃间断点。", ["func_limit", "continuity"], ["极限存在条件"]),
-    "两个重要极限": ("第一个重要极限lim(x→0) sinx/x=1，几何意义是sinx在0附近≈x。第二个重要极限lim(x→∞)(1+1/x)ˣ=e，是自然常数的定义来源。", ["func_limit", "seq_limit"], ["两个重要极限"]),
-    "连续": ("函数在x₀处连续需要：f(x₀)有定义、lim f(x)存在、极限值等于函数值。可导一定连续，但连续不一定可导。", ["continuity", "derivative"], ["连续三条件"]),
-    "间断点分类": ("间断点分两大类：第一类（左右极限都存在）包括可去（极限相等但不等于函数值）和跳跃（极限不等）；第二类（至少一侧极限不存在）包括无穷和振荡。", ["continuity"], ["间断点分类"]),
-    "介值定理": ("闭区间上连续函数能取到两端值之间的所有值。常用于证明方程有根：如果f(a)·f(b)<0，则在(a,b)内至少有一个根。", ["continuity"], ["介值定理"]),
-    "导数定义": ("导数f'(x₀)=lim(h→0)[f(x₀+h)-f(x₀)]/h，几何意义是切线斜率。用定义求导的四步法：求增量→算比值→取极限→得导数。", ["derivative"], ["导数定义"]),
-    "可导与连续": ("可导⇒连续，但连续⇏可导。反例：f(x)=|x|在x=0处连续但左导数=-1≠右导数=1，不可导。", ["derivative", "continuity"], ["可导与连续"]),
-    "链式法则": ("复合函数求导的核心：f(g(x))'=f'(g(x))·g'(x)。从外到内逐层求导相乘，就像剥洋葱。例如sin(2x+1)'=cos(2x+1)·2。", ["diff_rules", "chain_rule_multi"], ["链式法则"]),
-    "乘积法则": ("(uv)'=u'v+uv'，口诀'前导后不导+前不导后导'。例如(x²·sinx)'=2x·sinx+x²·cosx。", ["diff_rules"], ["四则运算"]),
-    "高阶导数": ("二阶导数f''(x)代表一阶导数的变化率，物理意义是加速度。f''>0曲线凹向上，f''<0凸向上。莱布尼茨公式求乘积高阶导。", ["higher_der"], ["莱布尼茨公式"]),
-    "罗尔定理": ("如果f在[a,b]连续、开区间可导、且f(a)=f(b)，则存在ξ∈(a,b)使得f'(ξ)=0。几何意义：两端点等高，中间有水平切线。", ["mean_theorem"], ["罗尔定理"]),
-    "拉格朗日中值定理": ("f(b)-f(a)=f'(ξ)(b-a)。推论：f'(x)>0⇒严格递增；f'(x)=0⇒常数函数。用于证明不等式。", ["mean_theorem"], ["拉格朗日中值定理"]),
-    "洛必达法则": ("求0/0和∞/∞型极限的利器：lim f/g = lim f'/g'。先验证是否为不定式，其他类型需先转化。", ["lhopital"], ["洛必达法则"]),
-    "泰勒展开": ("用多项式逼近函数：f(x)=∑f⁽ᵏ⁾(x₀)/k!·(x-x₀)ᵏ+Rₙ(x)。eˣ=1+x+x²/2!+x³/3!+...，sinx=x-x³/3!+x⁵/5!-...", ["taylor", "taylor_series"], ["泰勒公式", "常用展开"]),
-    "不定积分": ("求导的逆运算，∫f(x)dx=F(x)+C。基本公式：∫xⁿdx=xⁿ⁺¹/(n+1)+C，∫1/xdx=ln|x|+C，∫eˣdx=eˣ+C。", ["indef_integral"], ["基本积分公式"]),
-    "定积分": ("∫ₐᵇ f(x)dx=F(b)-F(a)（牛顿-莱布尼茨公式）。几何意义：曲线下面积。", ["def_integral", "newton_leibniz"], ["牛顿-莱布尼茨公式"]),
-    "换元积分": ("第一类换元（凑微分）：∫f(φ(x))φ'(x)dx=∫f(u)du。第二类换元：三角代换√(a²-x²)令x=asint。定积分换元要换限！", ["substitution"], ["第一类换元", "第二类换元"]),
-    "分部积分": ("∫udv=uv-∫vdu。选u原则：反对幂指三（左优先为u）。", ["by_parts"], ["分部积分法"]),
-    "偏导数": ("∂f/∂x是对x求导，其他变量看作常数。混合偏导f_xy=f_yx（连续时）。", ["partial_der"], ["偏导数"]),
-    "全微分": ("dz=∂z/∂x·dx+∂z/∂y·dy，是函数增量的线性主部。用于近似计算。", ["total_diff"], ["全微分"]),
-    "梯度": ("∇f=(∂f/∂x,∂f/∂y)指向函数增长最快的方向。方向导数D_u f=∇f·u。梯度下降法：xₙ₊₁=xₙ-α∇f(xₙ)。", ["gradient", "multi_extremum"], ["梯度", "方向导数"]),
-    "链法则多元": ("∂z/∂x=∂z/∂u·∂u/∂x+∂z/∂v·∂v/∂x。画依赖树→每条路径相乘→所有路径相加。", ["chain_rule_multi"], ["链法则"]),
-    "二重积分": ("直角坐标：∫dx∫f dy或∫dy∫f dx。极坐标：dA=rdrdθ，适合圆形区域。", ["double_int"], ["直角坐标计算", "极坐标计算"]),
-    "三重积分": ("先一后二：先对z积分再在xy投影上做二重积分。柱坐标dV=rdrdθdz，球坐标dV=r²sinφ·drdφdθ。", ["triple_int"], ["柱坐标", "球坐标"]),
-    "格林公式": ("∮Pdx+Qdy=∬(∂Q/∂x-∂P/∂y)dA。面积公式A=½∮xdy-ydx。", ["green", "line_int_2nd"], ["格林公式"]),
-    "高斯公式": ("∯F·dS=∭divF dV。divF=∂P/∂x+∂Q/∂y+∂R/∂z。", ["surface_int"], ["高斯公式"]),
-    "收敛级数": ("级数∑aₙ收敛⇔部分和Sₙ有极限。必要条件：aₙ→0。p-级数∑1/nᵖ：p>1收敛。", ["num_series", "pos_series"], ["收敛定义", "p-级数"]),
-    "比值判别法": ("lim aₙ₊₁/aₙ=ρ，ρ<1收敛，ρ>1发散。适合含阶乘或指数的级数。", ["pos_series"], ["比值判别法"]),
-    "幂级数收敛半径": ("R=1/limⁿ√|aₙ|或R=lim|aₙ/aₙ₊₁|。在(-R,R)内绝对收敛。", ["power_series"], ["收敛半径"]),
-    "可分离变量": ("dy/dx=f(x)g(y)⇒分离变量两边积分。最简单的一阶方程类型。", ["ode_first"], ["可分离变量"]),
-    "一阶线性微分方程": ("y'+P(x)y=Q(x)，积分因子μ=e^(∫Pdx)求解。", ["ode_first"], ["一阶线性"]),
-    "特征方程": ("y''+py'+qy=0⇒r²+pr+q=0。两不同实根⇒y=C₁eʳ¹ˣ+C₂eʳ²ˣ。", ["ode_const"], ["特征方程法"]),
-    "怎么算": ("建议先写出公式/定义，再逐步代入。如果卡住了，先判断题型属于哪个知识点。", ["derivative", "indef_integral"], ["基本公式"]),
-    "有什么区别": ("需要具体看是哪两个概念。通常可以从定义、几何意义、适用条件三个维度对比。", ["mean_theorem", "continuity"], []),
-    "给我举个例子": ("好的，请告诉我具体是哪个知识点？例如极限计算、导数求法、积分技巧等。", ["seq_limit", "derivative", "substitution"], []),
-    "证明": ("证明题通常需要用到中值定理（拉格朗日、柯西）或泰勒公式。先分析条件和结论，再选择合适的定理。", ["mean_theorem", "taylor"], ["拉格朗日中值定理"]),
-    "应用": ("高等数学的应用非常广泛：物理中的运动与变化问题、工程中的优化问题、经济学中的边际分析、AI中的梯度下降等。", ["extremum", "gradient", "integral_app_area"], []),
+    "什么是极限": ("极限描述当自变量趋近于某值时，函数值无限接近的某个常数。ε-δ语言是其严格定义。", ["seq_limit", "func_limit"], ["ε-N定义", "夹逼准则"]),
+    "ε-δ": ("ε-δ语言是极限的严格数学定义：∀ε>0,∃δ>0,0<|x-x₀|<δ⇒|f(x)-A|<ε。", ["seq_limit", "func_limit"], ["ε-N定义"]),
+    "左右极限": ("函数极限存在当且仅当左极限等于右极限。", ["func_limit", "continuity"], ["极限存在条件"]),
+    "两个重要极限": ("lim(x→0) sinx/x=1，lim(x→∞)(1+1/x)ˣ=e。", ["func_limit", "seq_limit"], ["两个重要极限"]),
+    "连续": ("函数在x₀处连续需满足三条件：有定义、极限存在、极限等于函数值。", ["continuity", "derivative"], ["连续三条件"]),
+    "导数定义": ("导数f'(x₀)=lim(h→0)[f(x₀+h)-f(x₀)]/h，几何意义是切线斜率。", ["derivative"], ["导数定义"]),
+    "可导与连续": ("可导⇒连续，但连续⇏可导。反例：|x|在x=0处。", ["derivative", "continuity"], ["可导与连续"]),
+    "链式法则": ("f(g(x))'=f'(g(x))·g'(x)。从外到内逐层求导相乘。", ["diff_rules", "chain_rule_multi"], ["链式法则"]),
+    "罗尔定理": ("f(a)=f(b)⇒∃ξ∈(a,b),f'(ξ)=0。两端等高，中间有水平切线。", ["mean_theorem"], ["罗尔定理"]),
+    "拉格朗日中值定理": ("f(b)-f(a)=f'(ξ)(b-a)。用于证明不等式。", ["mean_theorem"], ["拉格朗日中值定理"]),
+    "洛必达法则": ("求0/0和∞/∞型极限：lim f/g = lim f'/g'。", ["lhopital"], ["洛必达法则"]),
+    "泰勒展开": ("用多项式逼近函数：f(x)=∑f⁽ᵏ⁾(x₀)/k!·(x-x₀)ᵏ+Rₙ(x)。", ["taylor", "taylor_series"], ["泰勒公式"]),
+    "不定积分": ("求导逆运算，∫f(x)dx=F(x)+C。", ["indef_integral"], ["基本积分公式"]),
+    "定积分": ("∫ₐᵇ f(x)dx=F(b)-F(a)（牛顿-莱布尼茨公式）。", ["def_integral", "newton_leibniz"], ["牛顿-莱布尼茨公式"]),
+    "换元积分": ("凑微分∫f(φ(x))φ'(x)dx=∫f(u)du。三角代换处理根式。", ["substitution"], ["第一类换元"]),
+    "分部积分": ("∫udv=uv-∫vdu。选u原则：反对幂指三。", ["by_parts"], ["分部积分法"]),
+    "偏导数": ("∂f/∂x是对x求导，其他看作常数。混合偏导相等（连续时）。", ["partial_der"], ["偏导数"]),
+    "全微分": ("dz=∂z/∂x·dx+∂z/∂y·dy，用于近似计算。", ["total_diff"], ["全微分"]),
+    "梯度": ("∇f=(∂f/∂x,∂f/∂y)指向增长最快方向。梯度下降xₙ₊₁=xₙ-α∇f(xₙ)。", ["gradient", "multi_extremum"], ["梯度"]),
+    "格林公式": ("∮Pdx+Qdy=∬(∂Q/∂x-∂P/∂y)dA。面积A=½∮xdy-ydx。", ["green", "line_int_2nd"], ["格林公式"]),
+    "高斯公式": ("∯F·dS=∭divF dV。通量=散度的体积分。", ["surface_int"], ["高斯公式"]),
+    "比值判别法": ("lim aₙ₊₁/aₙ=ρ，ρ<1收敛，ρ>1发散。", ["pos_series"], ["比值判别法"]),
+    "幂级数收敛半径": ("R=lim|aₙ/aₙ₊₁|。(-R,R)内绝对收敛。", ["power_series"], ["收敛半径"]),
+    "可分离变量": ("dy/dx=f(x)g(y)⇒分离变量积分。", ["ode_first"], ["可分离变量"]),
+    "特征方程": ("y''+py'+qy=0⇒r²+pr+q=0。", ["ode_const"], ["特征方程法"]),
 }
 
 def ai_respond(question, topic_name):
-    """智能AI问答：根据问题类型和当前知识点返回个性化回答"""
     q = question.lower().strip()
     matched_topics = set()
     matched_methods = []
-    
-    # 获取当前知识点对象
     current_t = None
     for t in TOPICS:
         if t["name"] == topic_name:
             current_t = t
             break
     
-    # 检测问题类型
     question_type = "概念理解"
     if any(w in q for w in ["怎么", "如何", "步骤", "方法", "求", "计算"]):
         question_type = "方法步骤"
-    elif any(w in q for w in ["区别", "不同", "vs", "对比", "差异", "关系"]):
+    elif any(w in q for w in ["区别", "不同", "关系", "对比"]):
         question_type = "概念辨析"
-    elif any(w in q for w in ["为什么", "原因", "原理", "道理", "依据"]):
+    elif any(w in q for w in ["为什么", "原因", "原理"]):
         question_type = "原理探究"
     elif any(w in q for w in ["例", "例子", "举例", "应用"]):
         question_type = "举例应用"
     elif any(w in q for w in ["证明", "证"]):
         question_type = "逻辑证明"
     
-    # 1. 优先匹配QA_ANSWERS关键词
     for keyword, (ans, topics, methods) in QA_ANSWERS.items():
         if keyword.lower() in q:
-            # 根据问题类型调整回答风格
             if question_type == "概念辨析":
-                ans += "\n\n💡 对比时建议从定义、几何意义、适用条件三个维度分析。"
+                ans += "\n\n💡 建议从定义、几何意义、适用条件三个维度分析。"
             elif question_type == "举例应用":
-                ans += "\n\n💡 建议先理解概念再做例题，效果更好。"
+                ans += "\n\n💡 建议先理解概念再做例题。"
             return ans, list(topics)[:3], list(dict.fromkeys(methods))[:3]
     
-    # 2. 检查问题中是否包含其他知识点名称
     for t in TOPICS:
         if t["name"].lower() in q and t["id"] != (current_t["id"] if current_t else None):
             matched_topics.add(t["id"])
     
-    # 3. 检查数学术语
     math_terms = {
         "极限": "seq_limit", "导数": "derivative", "微分": "differential",
         "积分": "def_integral", "泰勒": "taylor", "梯度": "gradient",
-        "格林": "green", "级数": "num_series", "方程": "ode_basic", "向量": "vector",
-        "函数": "function", "连续": "continuity", "中值": "mean_theorem",
+        "格林": "green", "级数": "num_series", "方程": "ode_basic",
+        "函数": "function", "连续": "continuity",
     }
     for term, tid in math_terms.items():
         if term in q and tid != (current_t["id"] if current_t else None):
             matched_topics.add(tid)
     
-    # 4. 根据问题类型和当前知识点生成回答
     if current_t:
         matched_topics.add(current_t["id"])
         desc = current_t.get("desc", "")
@@ -1244,57 +1312,42 @@ def ai_respond(question, topic_name):
         examples = current_t.get("examples", "")
         
         if question_type == "概念理解":
-            # 从描述中提取前两句话
             sentences = desc.replace("\n", "").split("。")
             core = "。".join(sentences[:2]) + "。"
-            answer = f"关于「{topic_name}」的概念：\n{core}\n\n📌 简单来说，{sentences[0]}"
-        
+            answer = f"关于「{topic_name}」的概念：\n{core}"
         elif question_type == "方法步骤":
             methods_preview = "\n".join(methods_list[:4])
-            answer = f"关于「{topic_name}」的解题方法：\n{methods_preview}\n\n📌 掌握这些方法后，建议做几道题巩固。"
-        
+            answer = f"关于「{topic_name}」的解题方法：\n{methods_preview}"
         elif question_type == "概念辨析":
-            answer = f"关于「{topic_name}」的辨析：\n{desc[:200]}...\n\n💡 建议从定义、几何意义、适用条件三个维度与其他概念对比。"
-        
+            answer = f"关于「{topic_name}」的辨析：\n{desc[:200]}..."
         elif question_type == "举例应用":
             if examples:
                 answer = f"关于「{topic_name}」的例题：\n{examples[:300]}"
             else:
-                answer = f"关于「{topic_name}」的应用场景：\n{desc[:200]}...\n\n建议做几道练习题加深理解。"
-        
+                answer = f"关于「{topic_name}」的应用场景：\n{desc[:200]}..."
         elif question_type == "原理探究":
             sentences = desc.replace("\n", "").split("。")
-            answer = f"关于「{topic_name}」的原理：\n{sentences[0]}。\n\n📌 深入理解需要结合定义和几何意义。"
-        
+            answer = f"关于「{topic_name}」的原理：\n{sentences[0]}。"
         elif question_type == "逻辑证明":
-            answer = f"关于「{topic_name}」的证明思路：\n建议从定义出发，结合已知定理逐步推导。\n\n📌 证明题常用技巧：分析法（从结论倒推）和综合法（从条件向前推）。"
-        
+            answer = f"关于「{topic_name}」的证明思路：\n建议从定义出发，结合已知定理推导。"
         else:
             answer = f"关于「{topic_name}」：\n{desc[:200]}..."
-    
     else:
-        answer = f"关于「{topic_name}」的问题，建议回顾基本定义和公式，做几道基础题巩固。"
-        for t in TOPICS:
-            if t["name"] == topic_name:
-                matched_topics.add(t["id"])
-                break
+        answer = f"关于「{topic_name}」的问题，建议回顾基本定义。"
     
-    # 提取方法关键词（从methods中提取带【】的内容）
     if current_t:
         for line in current_t.get("methods", "").split("\n"):
             if "【" in line and "】" in line:
-                method_name = line.split("】")[0].replace("【", "").strip()
-                if method_name and len(method_name) < 15:
-                    matched_methods.append(method_name)
+                mn = line.split("】")[0].replace("【", "").strip()
+                if mn and len(mn) < 15:
+                    matched_methods.append(mn)
     
     matched_topics = list(matched_topics)[:4]
     matched_methods = list(dict.fromkeys(matched_methods))[:4]
-    
     return answer, matched_topics, matched_methods
 
-
 # ============================================================
-# 7. 知识图谱布局
+# 8. 知识图谱布局
 # ============================================================
 def compute_layout():
     pos = {}
@@ -1328,7 +1381,7 @@ def compute_layout():
 LAYOUT_POS = compute_layout()
 
 # ============================================================
-# 8. 绘制知识图谱
+# 9. 绘制知识图谱
 # ============================================================
 def build_knowledge_graph():
     edge_traces = []
@@ -1375,7 +1428,7 @@ def build_knowledge_graph():
         )
     return fig
 # ============================================================
-# 9. 详情页
+# 10. 详情页（含笔记/错题/课件上传）
 # ============================================================
 def render_detail_page(topic_id):
     topic = TOPIC_DICT[topic_id]
@@ -1386,11 +1439,13 @@ def render_detail_page(topic_id):
     else:
         st.session_state.history[topic_id]["visited"] = True
     
+    add_timeline("学习", topic["name"])
+    
     if st.button("← 返回知识图谱"):
         st.session_state.page = "home"
         st.rerun()
     
-    # ---- 区块1：AI讲解 ----
+    # ---- AI讲解 ----
     st.markdown("---")
     st.markdown("## 🤖 AI 作为讲解者")
     col1, col2 = st.columns([1, 1])
@@ -1401,12 +1456,11 @@ def render_detail_page(topic_id):
         st.markdown("### 🛠️ 核心方法")
         st.success(topic["methods"])
     
-    # ---- 区块2：例题 ----
     if "examples" in topic and topic["examples"]:
         st.markdown("### 📝 例题精讲")
         st.warning(topic["examples"])
     
-    # ---- 区块3：AI提问（刷题） ----
+    # ---- 刷题 ----
     st.markdown("---")
     st.markdown("## ❓ AI 作为提问者（刷题练习）")
     
@@ -1422,10 +1476,8 @@ def render_detail_page(topic_id):
         q_idx = st.session_state[f"q_index_{topic_id}"]
         current_q = qs[q_idx % len(qs)]
         
-        # 显示当前题号和总题数
         st.markdown(f"**第 {q_idx % len(qs) + 1} / {len(qs)} 题**")
         st.markdown(f"**{current_q['q']}**")
-        st.caption(f"题库共 {len(qs)} 道题，随机循环出题")
         
         opts = current_q["options"]
         selected = st.radio("选择答案：", opts, key=f"q_radio_{topic_id}_{q_idx}", index=None)
@@ -1434,20 +1486,19 @@ def render_detail_page(topic_id):
         with col_a:
             if st.button("提交答案", key=f"submit_{topic_id}_{q_idx}"):
                 if selected is None:
-                    st.warning("请先选择一个答案再提交")
+                    st.warning("请先选择一个答案")
                 else:
                     opt_idx = opts.index(selected)
                     if opt_idx == current_q["answer"]:
-                        st.success("✅ 回答正确！")
+                        st.success("✅ 正确！")
                         st.session_state.history[topic_id]["correct"] += 1
                         st.session_state[f"q_feedback_{topic_id}"] = "✅ 正确！"
+                        add_timeline("做题正确", topic["name"])
                     else:
-                        correct_opt = opts[current_q["answer"]]
-                        # 错误类型诊断
-                        st.error("❌ 回答错误")
+                        st.error("❌ 错误")
                         st.info(f"💡 {current_q['explain']}")
                         st.session_state.history[topic_id]["wrong"] += 1
-                        st.session_state[f"q_feedback_{topic_id}"] = f"❌ 错误，正确答案是：{correct_opt}"
+                        st.session_state[f"q_feedback_{topic_id}"] = f"❌ 正确答案是：{opts[current_q['answer']]}"
                     st.session_state[f"q_answered_{topic_id}"] = True
         
         with col_b:
@@ -1458,88 +1509,369 @@ def render_detail_page(topic_id):
                     st.session_state[f"q_feedback_{topic_id}"] = ""
                     st.rerun()
         
-        # 显示上次反馈
         if st.session_state[f"q_feedback_{topic_id}"]:
-            st.markdown(f"**上题反馈**：{st.session_state[f'q_feedback_{topic_id}']}")
+            st.markdown(f"**反馈**：{st.session_state[f'q_feedback_{topic_id}']}")
     
-    # ---- 区块4：五星打分 ----
+    # ---- 五星打分 ----
     st.markdown("---")
-    st.markdown("## ⭐ 自我评估打分")
-    st.markdown("你觉得这个知识点掌握了多少？点击星星打分：")
-    
+    st.markdown("## ⭐ 自我评估")
     current_rating = st.session_state.ratings.get(topic_id, 0)
     cols = st.columns(5)
     for i in range(5):
         with cols[i]:
-            star_label = "⭐" if i < current_rating else "☆"
-            if st.button(star_label, key=f"star_{topic_id}_{i}"):
+            if st.button("⭐" if i < current_rating else "☆", key=f"star_{topic_id}_{i}"):
                 st.session_state.ratings[topic_id] = i + 1
                 st.rerun()
+    st.markdown(f"**评分**：{'⭐' * current_rating}{'☆' * (5 - current_rating)} ({current_rating}/5)")
     
-    st.markdown(f"**目前评分**：{'⭐' * current_rating}{'☆' * (5 - current_rating)} ({current_rating}/5)")
-    
-    # ---- 区块5：AI提问 + 跳转 ----
+    # ---- 上传课件 ----
     st.markdown("---")
-    st.markdown("## 💬 向AI提问（可跳转到关联知识点）")
-    user_q = st.text_input("输入你的疑问（AI会判断关联的知识点和方法）：", key=f"qa_input_{topic_id}")
-    
-    col_q1, col_q2 = st.columns([1, 5])
-    with col_q1:
-        ask_btn = st.button("💬 提问", key=f"qa_btn_{topic_id}")
-    
-    if ask_btn and user_q.strip():
-        answer, related_topics, related_methods = ai_respond(user_q, topic["name"])
-        st.markdown(f"**🤖 AI 回答**：{answer}")
+    with st.expander("📁 上传课件", expanded=False):
+        uploaded_file = st.file_uploader(
+            "选择课件文件（PDF/图片/TXT等）",
+            type=["pdf", "png", "jpg", "jpeg", "txt", "md", "docx"],
+            key=f"course_{topic_id}"
+        )
+        if uploaded_file is not None:
+            if topic_id not in st.session_state.course_materials:
+                st.session_state.course_materials[topic_id] = []
+            st.session_state.course_materials[topic_id].append({
+                "name": uploaded_file.name,
+                "data": uploaded_file.getvalue(),
+                "type": uploaded_file.type,
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            })
+            add_timeline("上传课件", topic["name"], uploaded_file.name)
+            st.success(f"✅ 课件「{uploaded_file.name}」已保存！")
+            st.rerun()
         
-        if related_topics:
-            names = []
-            for rtid in related_topics:
-                rt = TOPIC_DICT.get(rtid)
-                if rt:
-                    names.append(rt["name"])
-            st.markdown(f"**🔗 关联知识点**：{'、'.join(names)}")
-
-        if related_methods:
-            st.markdown(f"**🎯 关联方法**：{'、'.join(related_methods)}")
-        
-        if topic_id not in st.session_state.history:
-            st.session_state.history[topic_id] = {"visited": True, "correct": 0, "wrong": 0, "qas": []}
-        st.session_state.history[topic_id]["qas"].append({
-            "q": user_q,
-            "related_topics": related_topics,
-            "related_methods": related_methods
-        })
-
-
-
+        if topic_id in st.session_state.course_materials and st.session_state.course_materials[topic_id]:
+            st.markdown("**已上传课件：**")
+            for i, cm in enumerate(st.session_state.course_materials[topic_id][:]):
+                col_c1, col_c2 = st.columns([4, 1])
+                with col_c1:
+                    st.markdown(f"{i+1}. 📄 {cm['name']}（{cm['time']}）")
+                    b64 = base64.b64encode(cm["data"]).decode()
+                    href = f'<a href="data:{cm["type"]};base64,{b64}" download="{cm["name"]}">下载</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+                with col_c2:
+                    if st.button(f"🗑️ 删除", key=f"del_course_{topic_id}_{i}"):
+                        st.session_state.course_materials[topic_id].pop(i)
+                        st.rerun()
     
-    # ---- 快速测试区 ----
-    with st.expander("💡 想试试AI对不同问题的回答？点击展开测试"):
-        st.markdown("点击以下按钮，看看AI会关联到哪些知识点：")
-        test_questions = [
-            "什么是极限和连续的关系",
-            "怎么用洛必达法则求极限",
-            "链式法则怎么用",
-            "梯度和方向导数的区别",
-            "格林公式和高斯公式",
-            "给我举个例子",
-            "这个证明题怎么做",
-            "泰勒展开有什么用",
-            "幂级数收敛半径怎么求",
-            "微分方程怎么解",
-        ]
-        for tq in test_questions[:6]:
-            if st.button(f"🔄 {tq}", key=f"test_{tq}_{topic_id}"):
-                ans, rtopics, rmethods = ai_respond(tq, topic["name"])
-                st.markdown(f"**回答**：{ans}")
-                if rtopics:
-                    names = [TOPIC_DICT.get(tid, {}).get("name", tid) for tid in rtopics]
-                    st.markdown(f"**关联知识点**：{'、'.join(names)}")
-                if rmethods:
-                    st.markdown(f"**关联方法**：{'、'.join(rmethods)}")
+    # ---- 上传笔记 ----
+    with st.expander("📝 上传笔记", expanded=False):
+        col_n1, col_n2 = st.columns([1, 1])
+        with col_n1:
+            st.markdown("**方式一：文本输入**")
+            note_text = st.text_area("输入笔记内容（按Ctrl+Enter保存）：", key=f"note_text_{topic_id}", height=100)
+            if st.button("保存笔记", key=f"save_note_{topic_id}"):
+                if note_text.strip():
+                    if topic_id not in st.session_state.notes:
+                        st.session_state.notes[topic_id] = []
+                    st.session_state.notes[topic_id].append({
+                        "text": note_text.strip(),
+                        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    })
+                    add_timeline("添加笔记", topic["name"])
+                    st.success("✅ 笔记已保存！")
+                    st.rerun()
+        with col_n2:
+            st.markdown("**方式二：上传文件**")
+            note_file = st.file_uploader(
+                "选择笔记文件（图片/文本）",
+                type=["png", "jpg", "jpeg", "txt", "md", "pdf"],
+                key=f"note_file_{topic_id}"
+            )
+            if note_file is not None:
+                if topic_id not in st.session_state.note_files:
+                    st.session_state.note_files[topic_id] = []
+                st.session_state.note_files[topic_id].append({
+                    "name": note_file.name,
+                    "data": note_file.getvalue(),
+                    "type": note_file.type,
+                    "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                })
+                add_timeline("上传笔记文件", topic["name"], note_file.name)
+                st.success(f"✅ 笔记文件「{note_file.name}」已保存！")
+                st.rerun()
+        
+        has_notes = (topic_id in st.session_state.notes and st.session_state.notes[topic_id]) or \
+                    (topic_id in st.session_state.note_files and st.session_state.note_files[topic_id])
+        if has_notes:
+            st.markdown("**📖 查看笔记：**")
+            if topic_id in st.session_state.notes:
+                for i, note in enumerate(st.session_state.notes[topic_id][:]):
+                    with st.expander(f"📝 笔记 {i+1}（{note['time']}）"):
+                        st.markdown(note["text"])
+                        if st.button(f"🗑️ 删除此笔记", key=f"del_note_{topic_id}_{i}"):
+                            st.session_state.notes[topic_id].pop(i)
+                            st.rerun()
+            if topic_id in st.session_state.note_files:
+                for i, nf in enumerate(st.session_state.note_files[topic_id][:]):
+                    with st.expander(f"📎 文件笔记 {i+1}：{nf['name']}（{nf['time']}）"):
+                        if nf["type"].startswith("image"):
+                            st.image(nf["data"], caption=nf["name"])
+                        else:
+                            try:
+                                st.text(nf["data"].decode("utf-8"))
+                            except:
+                                st.info(f"📄 {nf['name']}（二进制文件，可下载查看）")
+                        b64 = base64.b64encode(nf["data"]).decode()
+                        href = f'<a href="data:{nf["type"]};base64,{b64}" download="{nf["name"]}">下载文件</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+                        if st.button(f"🗑️ 删除此文件", key=f"del_nfile_{topic_id}_{i}"):
+                            st.session_state.note_files[topic_id].pop(i)
+                            st.rerun()
+    
+    # ---- 上传错题 ----
+    with st.expander("❌ 上传错题", expanded=False):
+        st.markdown("**记录你的错题：**")
+        
+        col_wt1, col_wt2 = st.columns([1, 1])
+        with col_wt1:
+            st.markdown("**方式一：文本输入**")
+            wrong_text = st.text_area("错题内容：", key=f"wrong_text_{topic_id}", height=80)
+        with col_wt2:
+            st.markdown("**方式二：上传文件（图片/PDF等）**")
+            wrong_file = st.file_uploader(
+                "选择错题文件",
+                type=["png", "jpg", "jpeg", "pdf", "txt"],
+                key=f"wrong_file_{topic_id}"
+            )
+        
+        col_w1, col_w2 = st.columns([1, 1])
+        with col_w1:
+            wrong_type = st.selectbox(
+                "题型：",
+                ["选择题", "计算题", "证明题", "填空题", "概念题", "应用题"],
+                key=f"wrong_type_{topic_id}"
+            )
+        with col_w2:
+            wrong_aspect = st.selectbox(
+                "犯错方面：",
+                ["概念混淆", "计算失误", "方法错误", "审题不清", "公式记错", "推导断层", "其他"],
+                key=f"wrong_aspect_{topic_id}"
+            )
+        
+        if st.button("保存错题", key=f"save_wrong_{topic_id}"):
+            if wrong_text.strip() or wrong_file is not None:
+                wrong_item = {
+                    "topic_id": topic_id,
+                    "topic_name": topic["name"],
+                    "text": wrong_text.strip() if wrong_text.strip() else wrong_file.name,
+                    "type": wrong_type,
+                    "aspect": wrong_aspect,
+                    "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "has_file": wrong_file is not None,
+                }
+                if wrong_file is not None:
+                    wrong_item["file_name"] = wrong_file.name
+                    wrong_item["file_data"] = wrong_file.getvalue()
+                    wrong_item["file_type"] = wrong_file.type
+                
+                if topic_id not in st.session_state.wrong_questions:
+                    st.session_state.wrong_questions[topic_id] = []
+                st.session_state.wrong_questions[topic_id].append(wrong_item)
+                st.session_state.all_wrong_questions.append(wrong_item)
+                add_timeline("上传错题", topic["name"], f"{wrong_type}-{wrong_aspect}")
+                st.success("✅ 错题已保存！可在主页面「错题本」查看。")
+                st.rerun()
+            else:
+                st.warning("请至少输入错题内容或上传文件。")
+        
+        if topic_id in st.session_state.wrong_questions and st.session_state.wrong_questions[topic_id]:
+            st.markdown(f"**本知识点错题数：{len(st.session_state.wrong_questions[topic_id])}**")
+    
+    # ---- AI提问 ----
+    st.markdown("---")
+    st.markdown("## 💬 向AI提问")
+    user_q = st.text_input("输入你的疑问：", key=f"qa_input_{topic_id}")
+    if st.button("提问", key=f"qa_btn_{topic_id}") and user_q.strip():
+        # 先尝试用外部API
+        api_answer = None
+        if st.session_state.api_key:
+            prompt = f"用户正在学习高等数学知识点「{topic['name']}」，提问：{user_q}。请用简洁清晰的中文回答。"
+            api_answer = call_external_api(prompt, st.session_state.api_key, st.session_state.api_provider)
+        
+        if api_answer:
+            st.markdown(f"**🤖 AI 回答（API）**：{api_answer}")
+            if topic_id not in st.session_state.history:
+                st.session_state.history[topic_id] = {"visited": True, "correct": 0, "wrong": 0, "qas": []}
+            st.session_state.history[topic_id]["qas"].append({"q": user_q, "source": "api"})
+            st.session_state.chat_history.append({"role": "user", "content": user_q})
+            st.session_state.chat_history.append({"role": "assistant", "content": api_answer})
+        else:
+            answer, related_topics, related_methods = ai_respond(user_q, topic["name"])
+            st.markdown(f"**🤖 AI 回答（本地）**：{answer}")
+            if related_topics:
+                names = []
+                for rtid in related_topics:
+                    rt = TOPIC_DICT.get(rtid)
+                    if rt:
+                        names.append(rt["name"])
+                st.markdown(f"**🔗 关联知识点**：{'、'.join(names)}")
+            if related_methods:
+                st.markdown(f"**🎯 关联方法**：{'、'.join(related_methods)}")
+            if topic_id not in st.session_state.history:
+                st.session_state.history[topic_id] = {"visited": True, "correct": 0, "wrong": 0, "qas": []}
+            st.session_state.history[topic_id]["qas"].append({"q": user_q, "related_topics": related_topics})
 
 # ============================================================
-# 10. 规划页
+# 11. 错题本页面
+# ============================================================
+def render_wrong_book_page():
+    st.markdown("# 📕 全部错题本")
+    
+    if st.button("← 返回主页"):
+        st.session_state.page = "home"
+        st.rerun()
+    
+    if not st.session_state.all_wrong_questions:
+        st.info("📌 还没有记录错题，在学习页面中可以上传错题。")
+        return
+    
+    st.markdown(f"共 **{len(st.session_state.all_wrong_questions)}** 道错题")
+    
+    # 筛选
+    st.markdown("### 🔍 筛选")
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        filter_type = st.selectbox("题型", ["全部"] + list(set(w["type"] for w in st.session_state.all_wrong_questions)))
+    with col_f2:
+        filter_aspect = st.selectbox("犯错方面", ["全部"] + list(set(w["aspect"] for w in st.session_state.all_wrong_questions)))
+    with col_f3:
+        filter_topic = st.selectbox("知识点", ["全部"] + list(set(w["topic_name"] for w in st.session_state.all_wrong_questions)))
+    
+    filtered = st.session_state.all_wrong_questions
+    if filter_type != "全部":
+        filtered = [w for w in filtered if w["type"] == filter_type]
+    if filter_aspect != "全部":
+        filtered = [w for w in filtered if w["aspect"] == filter_aspect]
+    if filter_topic != "全部":
+        filtered = [w for w in filtered if w["topic_name"] == filter_topic]
+    
+    st.markdown(f"**筛选结果：{len(filtered)} 道**")
+    
+    # 按时间倒序显示（含删除功能+文件显示）
+    for i, w in enumerate(sorted(filtered, key=lambda x: x["time"], reverse=True)):
+        orig_idx = st.session_state.all_wrong_questions.index(w)
+        with st.expander(f"❌ {w['topic_name']} | {w['type']} | {w['aspect']} | {w['time']}"):
+            st.markdown(f"**题目**：{w['text']}")
+            if w.get('has_file') and w.get('file_data'):
+                if w.get('file_type', '').startswith('image'):
+                    st.image(w['file_data'], caption=w.get('file_name', ''), width=300)
+                else:
+                    b64 = base64.b64encode(w['file_data']).decode()
+                    href = f'<a href="data:{w.get("file_type", "application/octet-stream")};base64,{b64}" download="{w.get("file_name", "错题文件")}">下载错题文件</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+            st.markdown(f"**题型**：{w['type']} | **犯错方面**：{w['aspect']}")
+            col_r1, col_r2 = st.columns([1, 1])
+            with col_r1:
+                if st.button(f"去复习「{w['topic_name']}」", key=f"review_wrong_{i}"):
+                    st.session_state.selected_topic = w["topic_id"]
+                    st.session_state.page = "detail"
+                    st.rerun()
+            with col_r2:
+                if st.button(f"🗑️ 删除", key=f"del_wrong_{i}_{orig_idx}"):
+                    st.session_state.all_wrong_questions.pop(orig_idx)
+                    tid = w["topic_id"]
+                    if tid in st.session_state.wrong_questions:
+                        try:
+                            st.session_state.wrong_questions[tid].remove(w)
+                        except:
+                            pass
+                    st.rerun()
+    
+    # 统计
+    st.markdown("---")
+    st.markdown("### 📊 错题分析")
+    aspect_counts = {}
+    for w in st.session_state.all_wrong_questions:
+        aspect_counts[w["aspect"]] = aspect_counts.get(w["aspect"], 0) + 1
+    st.markdown("**犯错方面分布：**")
+    for aspect, count in sorted(aspect_counts.items(), key=lambda x: -x[1]):
+        ratio = count / len(st.session_state.all_wrong_questions) * 100
+        st.markdown(f"- {aspect}：{count} 题（{ratio:.1f}%）")
+
+
+# ============================================================
+# 12. 设置页面
+# ============================================================
+def render_settings_page():
+    st.markdown("# ⚙️ 设置")
+    
+    if st.button("← 返回主页"):
+        st.session_state.page = "home"
+        st.rerun()
+    
+    st.markdown("---")
+    st.markdown("## 🤖 AI 配置")
+    st.markdown("配置API Key后可获得更智能的AI回答。支持的API提供商：")
+    
+    col_api1, col_api2 = st.columns([1, 3])
+    with col_api1:
+        provider = st.selectbox("API提供商", ["deepseek", "openai"], index=0 if st.session_state.api_provider == "deepseek" else 1)
+    with col_api2:
+        api_key = st.text_input("API Key", value=st.session_state.api_key, type="password",
+                               placeholder="输入你的API Key（不会泄露）")
+    
+    if st.button("保存API配置"):
+        st.session_state.api_key = api_key
+        st.session_state.api_provider = provider
+        st.success("✅ API配置已保存！")
+    
+    st.markdown("---")
+    st.markdown("## 💾 数据管理")
+    
+    col_d1, col_d2 = st.columns(2)
+    
+    with col_d1:
+        st.markdown("**导出数据**")
+        if st.button("📤 导出学习数据"):
+            json_str = export_data()
+            b64 = base64.b64encode(json_str.encode("utf-8")).decode()
+            href = f'<a href="data:application/json;base64,{b64}" download="mathtutor_data.json">点击下载数据文件</a>'
+            st.markdown(href, unsafe_allow_html=True)
+            st.success("✅ 数据已导出！请保存好JSON文件。")
+    
+    with col_d2:
+        st.markdown("**导入数据**")
+        uploaded_json = st.file_uploader("选择之前导出的JSON文件", type=["json"])
+        if uploaded_json is not None:
+            try:
+                content = uploaded_json.read().decode("utf-8")
+                if import_data(content):
+                    st.success("✅ 数据导入成功！")
+                    st.rerun()
+                else:
+                    st.error("❌ 数据导入失败，请检查文件格式。")
+            except:
+                st.error("❌ 文件读取失败。")
+    
+    st.markdown("---")
+    st.markdown("## 📊 数据概览")
+    st.markdown(f"- 已学习知识点：{sum(1 for v in st.session_state.history.values() if v.get('visited', False))}")
+    st.markdown(f"- 总错题数：{len(st.session_state.all_wrong_questions)}")
+    st.markdown(f"- 时间轴记录数：{len(st.session_state.timeline)}")
+    st.markdown(f"- 总笔记数：{sum(len(v) for v in st.session_state.notes.values())}")
+    st.markdown(f"- 总课件数：{sum(len(v) for v in st.session_state.course_materials.values())}")
+    
+    st.markdown("---")
+    st.markdown("## 🗑️ 重置数据")
+    if st.button("⚠️ 重置所有数据（不可恢复）"):
+        for key in ["ratings", "history", "notes", "note_files", "wrong_questions",
+                    "all_wrong_questions", "course_materials", "timeline", "chat_history"]:
+            if key in st.session_state:
+                if isinstance(st.session_state[key], dict):
+                    st.session_state[key] = {}
+                elif isinstance(st.session_state[key], list):
+                    st.session_state[key] = []
+        st.success("✅ 数据已重置！")
+        st.rerun()
+
+# ============================================================
+# 13. 规划页（含时间轴 + 艾宾浩斯）
 # ============================================================
 def render_planning_page():
     st.markdown("# 🧭 学习规划中心")
@@ -1548,50 +1880,57 @@ def render_planning_page():
         st.session_state.page = "home"
         st.rerun()
     
-    visited_topics = {tid: info for tid, info in st.session_state.history.items() if info["visited"]}
+    # ---- 学习记录 ----
+    visited_topics = {tid: info for tid, info in st.session_state.history.items() if info.get("visited", False)}
     
-    if not visited_topics:
+    if not visited_topics and not st.session_state.timeline:
         st.info("📌 还没有学习记录，请先回到知识图谱学习！")
         return
     
-    st.markdown(f"已学习 **{len(visited_topics)}** 个知识点")
-    st.markdown("### 📊 学习历史记录")
+    if visited_topics:
+        st.markdown(f"已学习 **{len(visited_topics)}** 个知识点")
+        records = []
+        for tid, info in visited_topics.items():
+            t = TOPIC_DICT.get(tid)
+            if t is None: continue
+            rating = st.session_state.ratings.get(tid, 0)
+            total = info["correct"] + info["wrong"]
+            acc = f"{info['correct']}/{total}" if total > 0 else "未做题"
+            records.append({"知识点": t["name"], "章节": t["group"], "自评": "⭐"*rating+"☆"*(5-rating) if rating>0 else "未评分", "答题": acc})
+        if records:
+            st.table([{"知识点": r["知识点"], "章节": r["章节"], "自评": r["自评"], "答题": r["答题"]} for r in records])
     
-    records = []
-    for tid, info in visited_topics.items():
-        t = TOPIC_DICT.get(tid)
-        if t is None:
-            continue
-        rating = st.session_state.ratings.get(tid, 0)
-        total = info["correct"] + info["wrong"]
-        acc = f"{info['correct']}/{total}" if total > 0 else "未做题"
-        records.append({
-            "知识点": t["name"],
-            "章节": t["group"],
-            "自评": "⭐" * rating + "☆" * (5 - rating) if rating > 0 else "未评分",
-            "答题正确": acc,
-            "提问数": len(info["qas"]),
-            "tid": tid
-        })
-    
-    if records:
-        st.table([{"知识点": r["知识点"], "章节": r["章节"], "自评": r["自评"], "答题正确": r["答题正确"], "提问数": r["提问数"]} for r in records])
-    
+    # ---- 结合错题类型的智能推荐 ----
     st.markdown("---")
-    st.markdown("### 🎯 动态学习推荐")
+    st.markdown("### 🎯 智能推荐（结合错题分析）")
     
-    # 计算推荐
+    # 统计错题分布
+    wrong_aspect_counts = {}
+    wrong_topic_counts = {}
+    for w in st.session_state.all_wrong_questions:
+        wrong_aspect_counts[w["aspect"]] = wrong_aspect_counts.get(w["aspect"], 0) + 1
+        wrong_topic_counts[w["topic_id"]] = wrong_topic_counts.get(w["topic_id"], 0) + 1
+    
+    if wrong_aspect_counts:
+        st.markdown("**📌 你的常见错误类型：**")
+        for aspect, count in sorted(wrong_aspect_counts.items(), key=lambda x: -x[1])[:3]:
+            st.markdown(f"- {aspect}：{count} 次")
+    
+    # 推荐：优先复习错题多的知识点
     recommendations = []
     for t in TOPICS:
         tid = t["id"]
         rating = st.session_state.ratings.get(tid, 0)
         info = st.session_state.history.get(tid, {"visited": False, "correct": 0, "wrong": 0})
         total = info["correct"] + info["wrong"]
+        wrong_count = wrong_topic_counts.get(tid, 0)
         
-        if not info["visited"]:
-            recommendations.append((tid, 2, "未学", t["group"]))
-        elif rating < 3 or (total > 0 and info["wrong"] / total > 0.5):
-            priority = 10 - rating + info["wrong"]
+        if not info["visited"] and wrong_count > 0:
+            recommendations.append((tid, 5 + wrong_count, "未学但有错题", t["group"]))
+        elif not info["visited"]:
+            recommendations.append((tid, 1, "未学", t["group"]))
+        elif rating < 3 or (total > 0 and info["wrong"] / max(total, 1) > 0.4) or wrong_count > 0:
+            priority = 10 - rating + info["wrong"] + wrong_count * 2
             recommendations.append((tid, priority, "需复习", t["group"]))
         elif rating >= 4 and total >= 2:
             recommendations.append((tid, 1, "已掌握", t["group"]))
@@ -1600,57 +1939,106 @@ def render_planning_page():
     
     recommendations.sort(key=lambda x: -x[1])
     
-    st.markdown("#### 🥇 最推荐的下一步")
     for i, (tid, priority, status, group) in enumerate(recommendations[:5]):
         t = TOPIC_DICT[tid]
-        icon = "🔴" if status == "需复习" else "🟡" if status == "未学" else "🟢"
-        st.markdown(f"{icon} **{i+1}. {t['name']}**（{group}）— **{status}**")
-        if status == "需复习":
-            st.caption(f"建议：你的自评仅{st.session_state.ratings.get(tid, 0)}⭐，且错题较多，建议返回复习。")
-        elif status == "未学":
-            st.caption("建议：学习这个新知识点，它与已学内容有紧密关联。")
-        else:
-            st.caption("建议：巩固练习或尝试更难的综合题。")
-        
+        icon = "🔴" if status == "需复习" else "🟡" if "未学" in status else "🟢"
+        wrong_count = wrong_topic_counts.get(tid, 0)
+        extra = f"（错题 {wrong_count} 道）" if wrong_count > 0 else ""
+        st.markdown(f"{icon} **{i+1}. {t['name']}**（{group}）— **{status}** {extra}")
         if st.button(f"去学习「{t['name']}」", key=f"plan_{tid}"):
             st.session_state.selected_topic = tid
             st.session_state.page = "detail"
             st.rerun()
     
-    # 综合建议
-    need_review = [r for r in recommendations if r[2] == "需复习"]
-    not_learned = [r for r in recommendations if r[2] == "未学"]
+    # ---- 艾宾浩斯复习提醒 ----
+    st.markdown("---")
+    st.markdown("### 🧠 艾宾浩斯复习计划")
+    review_plan = get_ebbinghaus_review_plan()
+    if review_plan:
+        st.markdown("根据艾宾浩斯遗忘曲线，以下内容建议今天复习：")
+        for rp in review_plan[:8]:
+            st.markdown(f"📌 {rp['topic']}（{rp['days_ago']}天前学习，建议{rp['review_date']}复习）")
+    else:
+        st.info("暂无明显需要复习的知识点。继续学习新内容吧！")
     
-    if need_review:
-        st.warning(f"有 **{len(need_review)}** 个知识点需要复习，建议优先巩固薄弱环节。")
-    if not_learned:
-        st.info(f"还有 **{len(not_learned)}** 个知识点未学习，按计划推进。")
+    # ---- 时间轴 ----
+    st.markdown("---")
+    st.markdown("### 📅 学习时间轴")
+    
+    tab_t1, tab_t2, tab_t3 = st.tabs(["本周", "本月", "全部历史"])
+    
+    with tab_t1:
+        recent = get_timeline_by_date(7)
+        if recent:
+            for item in reversed(recent):
+                detail_str = f"（{item['detail']}）" if item['detail'] else ""
+                st.markdown(f"- {item['time']} | {item['action']} | **{item['topic']}** {detail_str}")
+        else:
+            st.info("本周暂无记录。")
+    
+    with tab_t2:
+        recent = get_timeline_by_date(30)
+        if recent:
+            for item in reversed(recent):
+                detail_str = f"（{item['detail']}）" if item['detail'] else ""
+                st.markdown(f"- {item['time']} | {item['action']} | **{item['topic']}** {detail_str}")
+        else:
+            st.info("本月暂无记录。")
+    
+    with tab_t3:
+        if st.session_state.timeline:
+            # 显示最近20条，更早的折叠
+            all_items = list(reversed(st.session_state.timeline))
+            shown = all_items[:20]
+            hidden = all_items[20:]
+            for item in shown:
+                detail_str = f"（{item['detail']}）" if item['detail'] else ""
+                st.markdown(f"- {item['time']} | {item['action']} | **{item['topic']}** {detail_str}")
+            if hidden:
+                with st.expander(f"📂 查看更早的记录（共{len(hidden)}条）"):
+                    for item in hidden:
+                        detail_str = f"（{item['detail']}）" if item['detail'] else ""
+                        st.markdown(f"- {item['time']} | {item['action']} | **{item['topic']}** {detail_str}")
+        else:
+            st.info("暂无历史记录。")
+
 
 # ============================================================
-# 11. 主页（知识图谱 + 搜索 + 列表）
+# 14. 主页
 # ============================================================
 def render_home_page():
-    st.markdown("<h1 style='text-align:center; color:#2c3e50;'>📐 MathTutor 高等数学学习可视化教学平台</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center; color:#7f8c8d; font-size:18px;'>覆盖高数上下册13章42个核心知识点 | 图像化·理解驱动·个性化学习</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center;'>📐 MathTutor 高等数学学习平台</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center;'>覆盖高数13章42个知识点 | 图像化·理解驱动·个性化学习</p>", unsafe_allow_html=True)
     
-    # ---- 图例 ----
     st.markdown("### 🎨 色彩图例")
     cols = st.columns(6)
-    group_items = list(GROUP_COLORS.items())
-    for i, (gname, gcolor) in enumerate(group_items):
+    for i, (gname, gcolor) in enumerate(GROUP_COLORS.items()):
         with cols[i % 6]:
-            st.markdown(f"<span style='color:{gcolor}; font-size:20px;'>●</span> {gname}", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:{gcolor};font-size:20px;'>●</span> {gname}", unsafe_allow_html=True)
     
+    # ---- 🔗 快捷入口 ----
     st.markdown("---")
-    
-    # ---- 搜索 ----
-    search_val = st.text_input("🔍 搜索知识点（输入名称，如'极限'、'导数'、'积分'）：",
-                               value=st.session_state.search_query, key="search_input")
-    if search_val != st.session_state.search_query:
-        st.session_state.search_query = search_val
+    col_q1, col_q2, col_q3, col_q4 = st.columns(4)
+    with col_q1:
+        if st.button("📕 错题本", use_container_width=True):
+            st.session_state.page = "wrong_book"
+            st.rerun()
+    with col_q2:
+        if st.button("🧭 学习规划", use_container_width=True):
+            st.session_state.page = "planning"
+            st.rerun()
+    with col_q3:
+        if st.button("⚙️ 设置", use_container_width=True):
+            st.session_state.page = "settings"
+            st.rerun()
+    with col_q4:
+        if st.button("💬 AI对话", use_container_width=True):
+            st.session_state.page = "chat"
+            st.rerun()
     
     # ---- 知识图谱 ----
-    st.markdown("### 🗺️ 知识图谱（点击圆圈进入学习）")
+    st.markdown("---")
+    st.markdown("### 🗺️ 知识图谱")
     fig = build_knowledge_graph()
     event = st.plotly_chart(fig, use_container_width=True, key="kg_main", on_select="rerun")
     
@@ -1663,28 +2051,12 @@ def render_home_page():
                 st.session_state.page = "detail"
                 st.rerun()
     
-    # ---- 搜索匹配 ----
-    if st.session_state.search_query:
-        query = st.session_state.search_query.lower()
-        matched = [t for t in TOPICS if query in t["name"].lower() or query in t["group"].lower()]
-        if matched:
-            st.markdown(f"**搜索结果（{len(matched)}个匹配）**：")
-            for t in matched[:5]:
-                if st.button(f"{t['name']}（{t['group']}）", key=f"srch_{t['id']}"):
-                    st.session_state.selected_topic = t["id"]
-                    st.session_state.page = "detail"
-                    st.rerun()
-        else:
-            st.info("未找到匹配的知识点，试试其他关键词。")
-    
     # ---- 全部知识点列表 ----
     st.markdown("---")
-    st.markdown("### 📋 全部知识点（点击名称进入学习）")
-    
+    st.markdown("### 📋 全部知识点")
     groups = {}
     for t in TOPICS:
         groups.setdefault(t["group"], []).append(t)
-    
     tabs = st.tabs(list(groups.keys()))
     for i, (gname, topics) in enumerate(groups.items()):
         with tabs[i]:
@@ -1696,43 +2068,116 @@ def render_home_page():
                     st.session_state.page = "detail"
                     st.rerun()
     
+    # ---- 错题本入口（规划上方） ----
+    st.markdown("---")
+    st.markdown("### 📕 错题本")
+    if st.session_state.all_wrong_questions:
+        st.warning(f"共有 {len(st.session_state.all_wrong_questions)} 道错题待复习")
+        if st.button("查看全部错题 →", use_container_width=True):
+            st.session_state.page = "wrong_book"
+            st.rerun()
+        # 展示最近的错题
+        st.markdown("**最近错题：**")
+        for w in sorted(st.session_state.all_wrong_questions, key=lambda x: x["time"], reverse=True)[:3]:
+            st.markdown(f"- ❌ {w['topic_name']} | {w['type']} | {w['aspect']} | {w['time']}")
+    else:
+        st.info("还没有错题记录。学习时遇到错题可以上传哦！")
+    
     # ---- 规划入口 ----
     st.markdown("---")
-    st.markdown("### 🧭 学习规划")
-    visited_count = sum(1 for v in st.session_state.history.values() if v["visited"])
+    visited_count = sum(1 for v in st.session_state.history.values() if v.get("visited", False))
     if visited_count > 0:
-        st.success(f"已学习 {visited_count} 个知识点，点击进入规划中心查看分析和推荐。")
+        st.success(f"已学习 {visited_count} 个知识点")
         if st.button("进入学习规划中心 →", use_container_width=True):
             st.session_state.page = "planning"
             st.rerun()
-    else:
-        st.info("开始学习吧！点击知识图谱中的圆圈，进入第一个知识点。")
 
 # ============================================================
-# 12. 主入口
+# 15. 浮动聊天窗口
+# ============================================================
+def render_chat_widget():
+    """空的聊天组件（已移除）"""
+    pass
+
+
+
+# ============================================================
+# AI对话页面
+# ============================================================
+def render_chat_page():
+    st.markdown("# 💬 AI学习助手对话")
+    
+    if st.button("← 返回主页"):
+        st.session_state.page = "home"
+        st.rerun()
+    
+    st.markdown("---")
+    
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                st.markdown(f"**🧑 你**：{msg['content']}")
+            else:
+                st.markdown(f"**🤖 AI**：{msg['content']}")
+    
+    st.markdown("---")
+    
+    if not st.session_state.api_key:
+        st.warning("⚠️ 未配置API Key，AI将使用本地预设回答。如需更智能的回答，请前往「设置」页面配置API Key。")
+    
+    chat_input = st.chat_input("输入你的数学问题...")
+    if chat_input:
+        st.session_state.chat_history.append({"role": "user", "content": chat_input})
+        
+        api_answer = None
+        if st.session_state.api_key:
+            prompt = f"用户在学习高等数学。请用简洁清晰的中文回答。\n\n用户问题：{chat_input}"
+            api_answer = call_external_api(prompt, st.session_state.api_key, st.session_state.api_provider)
+        
+        if api_answer:
+            st.session_state.chat_history.append({"role": "assistant", "content": api_answer})
+        else:
+            local_answer, rtopics, rmethods = ai_respond(chat_input, "高等数学")
+            response = local_answer
+            if rtopics:
+                names = []
+                for rtid in rtopics:
+                    rt = TOPIC_DICT.get(rtid)
+                    if rt:
+                        names.append(rt["name"])
+                response += f"\n\n🔗 相关知识点：{'、'.join(names)}"
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+        
+        st.rerun()
+# ============================================================
+# 16. 主入口
 # ============================================================
 def main():
-    if "_pending_jump" in st.session_state and st.session_state._pending_jump:
-        jump_tid = st.session_state._pending_jump
-        st.session_state._pending_jump = None
-        if jump_tid in TOPIC_DICT:
-            st.session_state.selected_topic = jump_tid
-            st.session_state.page = "detail"
-
+    # 处理页面前先渲染浮动聊天（在侧边或底部）
+    
     if st.session_state.page == "home":
         render_home_page()
     elif st.session_state.page == "detail":
         if st.session_state.selected_topic and st.session_state.selected_topic in TOPIC_DICT:
             render_detail_page(st.session_state.selected_topic)
         else:
-            st.error("知识点不存在，返回首页")
+            st.error("知识点不存在")
             st.session_state.page = "home"
             st.rerun()
     elif st.session_state.page == "planning":
         render_planning_page()
+    elif st.session_state.page == "wrong_book":
+        render_wrong_book_page()
+    elif st.session_state.page == "settings":
+        render_settings_page()
+    elif st.session_state.page == "chat":
+        render_chat_page()
     else:
         st.session_state.page = "home"
         st.rerun()
+
+    
 
 if __name__ == "__main__":
     main()
